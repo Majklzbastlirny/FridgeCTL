@@ -42,7 +42,7 @@ src/
   app_state.*         shared state struct + mutex
   nvs_store.*         persistence
   ow.*                bit-banged 1-Wire + DS18B20 driver
-  sensors.*           DS18B20 tasks + CT/ADC + ESP32 die temp
+  sensors.*           DS18B20 tasks + CT/ADC RMS
   gpio_io.*           relays / LEDs / light PWM / door+button task
   control.*           the 5 s control loop + derived telemetry
   leds.*              500 ms LED/UI loop
@@ -120,4 +120,36 @@ under one `FridgeCTL` device. Availability uses an LWT on
 | Panel LED 1/2/3     | 13/32/14 | active-low sink            |
 | Status LED          | 25   |                               |
 | Interior light PWM  | 15   | LEDC 1 kHz                    |
+
+## Sensor mounting
+
+The stainless-shelled DS18B20 probes can hang in **air** or — better for the two
+fridge-chamber probes — sit in a small sealed vial of **propylene glycol**
+(~30–50 % in distilled water) as a thermal buffer that mimics food temperature,
+smoothing control and suppressing door-open spikes. Keep the **compressor** probe
+clamped to the compressor body (fast over-temp response) and the **ambient** probe
+in open air. Defrost timing is driven by compressor run-time, not sensor
+temperature, so buffering does not affect it. See the User Manual for details.
+
+## License
+
+FridgeCTL is free software, licensed under the **GNU General Public License,
+version 3** — see [`LICENSE`](LICENSE).
+
+You may use, study, modify and redistribute it. If you distribute it or any
+modified version (including inside a product you sell), you must make the
+complete corresponding **source available under the same GPLv3 terms**, and —
+for consumer hardware — provide the information needed to install modified
+firmware. There is **no warranty**.
+
+```
+Copyright (C) 2026 Michal Basler
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License, version 3, as published by the
+Free Software Foundation.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
 ```

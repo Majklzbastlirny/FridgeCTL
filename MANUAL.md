@@ -266,6 +266,35 @@ If the device seems unreachable or misbehaving:
 | Inputs | Door switch, settings push-button |
 | Indicators | 3 × panel LED, 1 × onboard status LED, piezo buzzer, dimmable interior light |
 
+### Temperature probe mounting (air vs. glycol buffer)
+
+The DS18B20 probes are in sealed stainless shells, so you can mount them two ways:
+
+- **In open air** — fast, reads air temperature directly, but twitchy: it spikes
+  on every door opening and swings with each compressor cycle.
+- **In a glycol buffer** (recommended for the two fridge-chamber probes) — seal
+  the probe in a small vial of **propylene glycol** (food-safe; a ~30–50 % mix in
+  distilled water, which won't freeze at fridge/freezer temperatures). The fluid
+  is a thermal mass that mimics a small food item, so the reading reflects *food*
+  temperature and rides smoothly through door openings and defrosts. This is the
+  same "buffered probe" trick used in commercial and HACCP refrigeration.
+
+| Probe | Mounting | Why |
+|---|---|---|
+| Fridge upper / lower | Glycol buffer | Smooth, stable control; reads food temp; no door-open nuisance |
+| Freezer | Glycol buffer (smaller vial) | HACCP-correct; note it is slower to flag a genuine failure |
+| Compressor | Clamped to compressor body (no buffer) | Over-temp protection needs a fast response |
+| Ambient | Open air | Its job is to read room air |
+
+**Does buffering affect defrost?** No. Defrost is triggered by accumulated
+compressor run-time and ends on a fixed timer — it never looks at a temperature
+reading, so damping the probes cannot change when or how long defrost runs.
+
+> Use **propylene glycol** (also sold as *monopropylene glycol / MPG*), not the
+> toxic *ethylene* glycol, and avoid ready-mixed automotive antifreeze (dyes and
+> corrosion additives). A 1 : 1–2 mix with distilled water is ideal — the water
+> improves thermal coupling and makes the buffer behave more like real food.
+
 ### Sensor & timing summary
 
 | Parameter | Value |

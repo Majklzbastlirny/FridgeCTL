@@ -282,6 +282,14 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
   WDT" (not "Task WDT") is consistent with the migration working. Likely
   hardware fix: RC snubber across the fan relay contacts / flyback handling,
   and/or bulk capacitance on the 5V rail.
+  **✅ CONFIRMED FIXED (2026-06): user fitted an RC snubber on the fan relay and
+  the "Other WDT" resets stopped completely — 190k+ s (>2 days) continuous
+  uptime with zero crashes.** So the two watchdog classes had two distinct
+  fixes: the migration eliminated the **Task WDT** (cooperative-loop starvation)
+  by construction; the **snubber** eliminated the **Other WDT** (fan inductive
+  kickback / relay-arc EMI). The diag black-box (Pre-Reset Trace showing `FAN-`
+  before each reset) is what pinpointed the fan. Both were needed — a snubber
+  alone wouldn't have saved the old ESPHome build's Task-WDT starvation.
 - **DS18B20 read robustness (intermittent sensor faults).** Symptom: occasional
   one-cycle "sensor fault" (lower/compressor) that self-clears next refresh —
   classic single dropped OneWire transaction (noise, marginal slot). Two layers
@@ -292,7 +300,7 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
   consecutive failed cycles, holding the last good value meanwhile. A real dead
   sensor still trips within ~1.5 min; a one-off glitch is now invisible.
 
-## Status & next steps (as of 2026-06-XX)
+## Status & next steps (as of 2026-06)
 
 - ✅ Full migration **flashed and running on real hardware** at `192.168.1.4`.
   OTA via web page confirmed working. Build clean (Flash 57.1%, RAM 13.2%).
@@ -300,10 +308,14 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
 - ✅ Post-migration features added (see section above): OTA rollback (heartbeat-
   based, offline-safe), INITIAL COOLDOWN / SYSTEM OFF states, physical on/off
   combo, light dim-when-off + 1 s fade, two-stage web UI.
-- ⏳ **Untested on hardware so far:** the physical on/off combo gesture, the
-  dim-to-25%-when-off light cue, and the new web control page (`/control`).
-  Verify these on the bench. Also still want the long-uptime soak confirming
-  "Reset Reason" never shows `Task WDT` (the whole point of the migration).
+- ✅ **Migration goal met: zero watchdog resets in long-uptime soak** (190k+ s /
+  >2 days continuous, "Reset Reason" never `Task WDT`). The remaining "Other WDT"
+  (hardware, fan inductive kickback) was **fixed with an RC snubber on the fan
+  relay** — see the diag black-box section. Both watchdog classes now resolved.
+- ✅ Published to GitHub (public) under **GPLv3** (`LICENSE`).
 - 🔎 CT current still worth a one-time clamp-meter sanity check (native ADC RMS
   path isn't bit-identical to ESPHome's `ct_clamp`); addresses/CT are confirmed
   good otherwise — don't retune blindly.
+- 🧊 Chamber/freezer DS18B20 probes to be moved into a **propylene-glycol buffer**
+  (glycol on order) — air-mount works but is twitchy; see README/MANUAL. Defrost
+  is run-time based so buffering won't affect it.
