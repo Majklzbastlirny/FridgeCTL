@@ -1,0 +1,1560 @@
+# ================================================================
+#  FridgeCTL — Smart Fridge Controller
+# ================================================================
+#  Board:   LilyGo T-Relay (ESP32)
+#  Sensors: 4× DS18B20 (upper, lower, compressor, ambient)
+#           1× CT clamp (compressor current)
+#  Relays:  Compressor, Fan, K1 spare, K2 spare
+#  I/O:     Door sensor, settings button, 3× panel LEDs,
+#           interior light (PWM)
+# ================================================================
+
+esphome:
+  name: fridgectl
+  friendly_name: FridgeCTL
+  on_boot:
+    priority: -10
+    then:
+      - script.execute: boot_sequence
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+#    sdkconfig_options:
+#          CONFIG_ESP_TASK_WDT_TIMEOUT_S: "10"       # Default is 5s, increase to 10s
+#          CONFIG_ESP_INT_WDT_TIMEOUT_MS: "800"     # Default is 300-500ms, increase to 800m
+preferences:
+  flash_write_interval: 5min   # default is 60s; reduces NVS writes 5x
+
+logger:
+
+api:
+  encryption:
+    key: !secret fridgectl_api_key
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: !secret fridgectl_ota_password
+    on_begin:
+      then:
+        - lambda: |-
+            ESP_LOGW("fridge", "OTA STARTING - shutting down relays");
+            id(g_comp_stop_ms) = millis();
+        - switch.turn_off: comp_relay
+        - switch.turn_off: fan_relay
+        - switch.turn_off: k2_relay
+    on_error:
+      then:
+        - lambda: |-
+            ESP_LOGE("fridge", "OTA error (code %d) - relays remain off until reboot", (int)x);
+            id(g_comp_stop_ms) = millis();
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  min_auth_mode: WPA2
+  reboot_timeout: 0s
+  ap:
+    ssid: "Fridgectl Fallback Hotspot"
+    password: !secret ap_password
+
+captive_portal:
+
+status_led:
+  pin: GPIO25
+
+debug:
+  update_interval: 60s
+
+# ----------------------------------------------------------------
+#  Globals — state tracking
+# ----------------------------------------------------------------
+globals:
+  - id: g_boot_done
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Compressor timing (millis timestamps)
+  - id: g_comp_stop_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_comp_start_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Safety latches
+  - id: g_comp_overtemp
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: g_overcurrent_fault
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: g_overcurrent_count
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_comp_blocked
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
+  # Turbo mode (millis expiry)
+  - id: g_turbo_until_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Door open timestamp (0 = closed)
+  - id: g_door_open_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Fan run-on expiry
+  - id: g_fan_runon_until
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Runtime counter (persisted every 10 min to reduce flash wear)
+  - id: g_comp_runtime_min
+    type: uint32_t
+    restore_value: yes
+    initial_value: "0"
+  - id: g_runtime_tick
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+
+  # Start counter (persisted on each start — infrequent writes)
+  - id: g_comp_starts
+    type: uint32_t
+    restore_value: yes
+    initial_value: "0"
+
+  # LED blink tick (0-255 wrapping, 500 ms per tick)
+  - id: g_led_tick
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+
+  # Setpoint display expiry
+  - id: g_setpoint_show_until
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Blind duty cycle (both chamber sensors dead)
+  - id: g_duty_phase_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_duty_on
+    type: bool
+    restore_value: no
+    initial_value: "true"
+
+  # CT sensor fault detection (zero current while compressor ON)
+  - id: g_no_current_count
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+
+  # Capacitor fault detection (intermittent zero-current = overload cycling)
+  - id: g_intermittent_zeros
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+
+  # Defrost cycle
+  - id: g_defrost_comp_min
+    type: uint16_t
+    restore_value: yes
+    initial_value: "0"
+  - id: g_defrost_tick
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_defrost_active
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: g_defrost_start_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Food safety (millis when temp first exceeded 8 °C, 0 = safe)
+  - id: g_food_unsafe_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Freezer state tracking (millis when threshold first crossed, 0 = OK)
+  - id: g_freezer_warm_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_freezer_cold_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: g_freezer_unsafe_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Freezer alarm latched states (persist across reboots)
+  - id: g_freezer_warm_latched
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+  - id: g_freezer_cold_latched
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+  - id: g_freezer_unsafe_latched
+    type: bool
+    restore_value: yes
+    initial_value: "false"
+
+  # Duty cycle — exponential moving average (0.0–1.0)
+  - id: g_duty_pct
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Temperature 10 min ago for rate-of-change detection
+  - id: g_temp_history
+    type: float
+    restore_value: yes
+    initial_value: "-999.0"
+  - id: g_temp_hist_tick
+    type: uint8_t
+    restore_value: no
+    initial_value: "0"
+
+  # Buzzer silence expiry
+  - id: g_buzzer_silence_until
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  # Compressor efficiency (°C cooled per minute)
+  - id: g_eff_start_temp
+    type: float
+    restore_value: no
+    initial_value: "-999.0"
+  - id: g_eff_value
+    type: float
+    restore_value: yes
+    initial_value: "0.0"
+
+  # Last captured compressor inrush peak (A)
+  - id: g_inrush_peak
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+# ----------------------------------------------------------------
+#  DS18B20 — one sensor per OneWire bus
+# ----------------------------------------------------------------
+one_wire:
+  - platform: gpio
+    pin: GPIO22
+    id: ow_upper
+  - platform: gpio
+    pin: GPIO26
+    id: ow_lower
+  - platform: gpio
+    pin: GPIO04
+    id: ow_compressor
+  - platform: gpio
+    pin: GPIO33
+    id: ow_ambient
+
+# ----------------------------------------------------------------
+#  Sensors
+# ----------------------------------------------------------------
+sensor:
+  # --- Physical sensors ---
+  - platform: dallas_temp
+    one_wire_id: ow_upper
+    name: "Upper Temp"
+    id: temp_upper
+    update_interval: 30s
+
+  - platform: dallas_temp
+    one_wire_id: ow_lower
+    name: "Lower Temp"
+    id: temp_lower
+    update_interval: 30s
+
+  - platform: dallas_temp
+    one_wire_id: ow_compressor
+    name: "Compressor Temp"
+    id: temp_compressor
+    update_interval: 30s
+
+  - platform: dallas_temp
+    one_wire_id: ow_ambient
+    address: 0xbd0623c34c9e4a28     # add — your existing ambient (from boot log)
+    name: "Ambient Temp"
+    id: temp_ambient
+    update_interval: 60s
+
+  - platform: dallas_temp
+    one_wire_id: ow_ambient
+    address: 0x4E00001096F82428     # new freezer sensor (verify byte 0 is 28)
+    name: "Freezer Temp"
+    id: temp_freezer
+    update_interval: 60s
+
+
+  - platform: adc
+    pin: GPIO34
+    id: adc_ct
+    attenuation: 12db
+    internal: true
+    update_interval: 5s
+    name: ADC_RAW
+
+  - platform: ct_clamp
+    sensor: adc_ct
+    name: "Compressor Current"
+    id: compressor_current
+    update_interval: 5s
+    sample_duration: 200ms
+    filters:
+      - calibrate_linear:
+          - 0 -> 0
+          - 0.04303 -> 1.17
+          - 0.2912 -> 7.94
+      # Clamp ADC noise floor (~0.13 A when compressor off) to zero
+      - lambda: "return x < 0.30f ? 0.0f : x;"
+    on_value:
+      # Latch inrush peak during the first 3 s after compressor start
+      - lambda: |-
+          if (id(comp_relay).state &&
+              id(g_comp_start_ms) != 0 &&
+              (uint32_t)(millis() - id(g_comp_start_ms)) < 3000) {
+            if (x > id(g_inrush_peak)) id(g_inrush_peak) = x;
+          }
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+
+  # --- Computed / template sensors ---
+  - platform: template
+    name: "Control Temperature"
+    id: temp_control
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    icon: "mdi:thermometer"
+    update_interval: 30s
+    lambda: |-
+      bool u = !std::isnan(id(temp_upper).state);
+      bool l = !std::isnan(id(temp_lower).state);
+      if (u && l) return (id(temp_upper).state + id(temp_lower).state) / 2.0f;
+      if (u) return id(temp_upper).state;
+      if (l) return id(temp_lower).state;
+      return NAN;
+
+  - platform: template
+    name: "Compressor Runtime"
+    unit_of_measurement: "h"
+    accuracy_decimals: 1
+    icon: "mdi:clock-outline"
+    update_interval: 60s
+    lambda: "return id(g_comp_runtime_min) / 60.0f;"
+
+  - platform: template
+    name: "Compressor Starts"
+    icon: "mdi:counter"
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: "return (float)id(g_comp_starts);"
+
+  - platform: template
+    name: "Compressor Duty Cycle"
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:percent"
+    update_interval: 30s
+    lambda: "return id(g_duty_pct) * 100.0f;"
+
+  - platform: template
+    name: "Cooling Efficiency"
+    unit_of_measurement: "°C/min"
+    accuracy_decimals: 3
+    icon: "mdi:thermometer-chevron-down"
+    update_interval: 60s
+    lambda: |-
+      // Live during a running cycle (>1 min in to avoid noise)
+      if (id(comp_relay).state && id(g_eff_start_temp) > -900.0f) {
+        float run_min = (float)(millis() - id(g_comp_start_ms)) / 60000.0f;
+        if (run_min > 1.0f) {
+          float t = id(temp_control).state;
+          if (!std::isnan(t)) {
+            return (id(g_eff_start_temp) - t) / run_min;
+          }
+        }
+      }
+      // Between cycles, last completed cycle's value
+      return id(g_eff_value);
+
+  - platform: template
+    name: "Last Inrush Peak"
+    id: inrush_peak
+    unit_of_measurement: "A"
+    accuracy_decimals: 2
+    icon: "mdi:lightning-bolt"
+    update_interval: 60s
+    lambda: "return id(g_inrush_peak);"
+
+  # ---- Diagnostics for watchdog investigation ----
+  - platform: internal_temperature
+    name: "ESP32 Internal Temp"
+    id: esp32_temp
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: debug
+    free:
+      name: "Heap Free"
+      id: heap_free
+      entity_category: diagnostic
+    block:
+      name: "Heap Max Block"
+      id: heap_block
+      entity_category: diagnostic
+    loop_time:
+      name: "Loop Time"
+      id: loop_time
+      entity_category: diagnostic
+
+  - platform: wifi_signal
+    name: "WiFi RSSI"
+    update_interval: 60s
+    entity_category: diagnostic
+
+# ----------------------------------------------------------------
+#  Text sensors
+# ----------------------------------------------------------------
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "WiFi SSID"
+    mac_address:
+      name: "MAC Address"
+
+  - platform: debug
+    device:
+      name: "Device Info"
+    reset_reason:
+      name: "Reset Reason"
+
+  - platform: template
+    name: "Alarm State"
+    id: alarm_state_text
+    icon: "mdi:alert-circle"
+    update_interval: 5s
+    lambda: |-
+      bool boot_grace = !id(g_boot_done);
+      if (boot_grace) return std::string("BOOTING");
+      // Critical faults first
+      if (id(g_overcurrent_fault)) return std::string("OVERCURRENT FAULT");
+      if (id(g_comp_overtemp)) return std::string("COMPRESSOR OVERTEMP");
+      // Sensor sanity (DS18B20: 85°C = power-on reset, out-of-range = dead)
+      float u = id(temp_upper).state, l = id(temp_lower).state;
+      bool u_ok = !std::isnan(u) && u > -40.0f && u < 50.0f;
+      bool l_ok = !std::isnan(l) && l > -40.0f && l < 50.0f;
+      if (!u_ok && !l_ok) return std::string("BLIND DUTY CYCLE");
+      if (!u_ok) return std::string("UPPER SENSOR FAULT");
+      if (!l_ok) return std::string("LOWER SENSOR FAULT");
+      // Compressor temp sensor
+      float tc = id(temp_compressor).state;
+      bool tc_ok = !std::isnan(tc) && tc > -40.0f && tc < 120.0f;
+      // CT sensor (zero current while compressor on > 30 s)
+      bool ct_ok = id(g_no_current_count) < 6;
+      // Door
+      bool door_eff = id(door_sensor).state && !id(door_override).state;
+      if (door_eff && id(g_door_open_ms) > 0) {
+        if ((uint32_t)(millis() - id(g_door_open_ms)) > 120000)
+          return std::string("DOOR OPEN");
+      }
+      // Food safety (critical)
+      if (id(g_food_unsafe_ms) > 0 &&
+          (uint32_t)(millis() - id(g_food_unsafe_ms)) > 7200000)
+        return std::string("FOOD SAFETY ALERT");
+      if (id(g_freezer_unsafe_latched)) return std::string("FREEZER FOOD SAFETY");
+      if (id(g_defrost_active)) return std::string("DEFROST");
+      if (id(g_comp_blocked)) return std::string("COMPRESSOR COOLDOWN");
+      // Degraded warnings (non-critical)
+      if (!tc_ok) return std::string("COMP TEMP SENSOR FAULT");
+      if (!ct_ok) return std::string("CT SENSOR FAULT");
+      if (id(g_intermittent_zeros) >= 5) return std::string("POSSIBLE CAP FAULT");
+      // Freezer alarms (latched after 30 min sustained breach)
+      if (id(g_freezer_warm_latched)) return std::string("FREEZER TOO WARM");
+      if (id(g_freezer_cold_latched)) return std::string("FREEZER TOO COLD");
+      // Rate-of-change anomaly
+      if (id(comp_relay).state && id(g_temp_history) > -900.0f) {
+        float t = id(temp_control).state;
+        if (!std::isnan(t) && t > id(g_temp_history) + 0.5f)
+          return std::string("TEMP RISING WHILE COOLING");
+      }
+      // Duty cycle
+      float da = id(temp_ambient).state;
+      float dt = 0.85f;
+      if (!std::isnan(da)) { dt = 0.55f + da * 0.01f; if (dt < 0.6f) dt = 0.6f; if (dt > 0.95f) dt = 0.95f; }
+      if (id(g_duty_pct) > dt) return std::string("HIGH DUTY CYCLE");
+      return std::string("OK");
+
+# ----------------------------------------------------------------
+#  Number — target temperature setpoint
+# ----------------------------------------------------------------
+number:
+  - platform: template
+    name: "Target Temperature"
+    id: target_temp
+    min_value: 1.0
+    max_value: 10.0
+    step: 0.5
+    initial_value: 4.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer-chevron-down"
+    set_action:
+      - lambda: "id(g_setpoint_show_until) = millis() + 3000;"
+
+  # Duty cycle timing (used when both chamber sensors are dead)
+  - platform: template
+    name: "Duty Cycle ON Minutes"
+    id: duty_on_min
+    min_value: 5
+    max_value: 60
+    step: 5
+    initial_value: 30
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-play"
+    entity_category: config
+
+  - platform: template
+    name: "Duty Cycle OFF Minutes"
+    id: duty_off_min
+    min_value: 5
+    max_value: 60
+    step: 5
+    initial_value: 30
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-pause"
+    entity_category: config
+
+  # Defrost settings
+  - platform: template
+    name: "Defrost Interval"
+    id: defrost_interval_hours
+    min_value: 4
+    max_value: 24
+    step: 1
+    initial_value: 8
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "h"
+    icon: "mdi:snowflake-melt"
+    entity_category: config
+
+  - platform: template
+    name: "Defrost Duration"
+    id: defrost_duration_min
+    min_value: 5
+    max_value: 30
+    step: 5
+    initial_value: 20
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "min"
+    icon: "mdi:snowflake-melt"
+    entity_category: config
+
+  - platform: template
+    name: "Vacation Temperature"
+    id: vacation_temp
+    min_value: 5.0
+    max_value: 12.0
+    step: 0.5
+    initial_value: 7.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    icon: "mdi:beach"
+    entity_category: config
+
+  # Freezer temperature monitoring thresholds
+  - platform: template
+    name: "Freezer Warm Threshold"
+    id: freezer_warm_thr
+    min_value: -20.0
+    max_value: 0.0
+    step: 0.5
+    initial_value: -12.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer-high"
+    entity_category: config
+
+  - platform: template
+    name: "Freezer Cold Threshold"
+    id: freezer_cold_thr
+    min_value: -40.0
+    max_value: -15.0
+    step: 1.0
+    initial_value: -28.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer-low"
+    entity_category: config
+
+  - platform: template
+    name: "Freezer Critical Threshold"
+    id: freezer_crit_thr
+    min_value: -10.0
+    max_value: 10.0
+    step: 1.0
+    initial_value: 0.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    icon: "mdi:food-off"
+    entity_category: config
+
+# ----------------------------------------------------------------
+#  Switches — relays & virtual controls
+# ----------------------------------------------------------------
+switch:
+  # Hardware relays — managed by automation, hidden from HA dashboard
+  - platform: gpio
+    pin: GPIO21
+    id: k1_relay
+    name: "K1 Spare"
+    entity_category: config
+
+  - platform: gpio
+    pin: GPIO19
+    id: k2_relay
+    name: "Buzzer"
+    internal: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: GPIO18
+    id: fan_relay
+    name: "Fan"
+    internal: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: GPIO05
+    id: comp_relay
+    name: "Compressor"
+    internal: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: capture_inrush
+
+  # Virtual controls for HA
+  - platform: template
+    name: "System Enable"
+    id: system_enable
+    icon: "mdi:power"
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+
+  - platform: template
+    name: "Turbo Mode"
+    id: turbo_switch
+    icon: "mdi:snowflake-alert"
+    lambda: "return (int32_t)(id(g_turbo_until_ms) - millis()) > 0;"
+    turn_on_action:
+      - lambda: |-
+          id(g_turbo_until_ms) = millis() + 1800000;
+          ESP_LOGI("fridge", "Turbo ON (30 min) via HA");
+    turn_off_action:
+      - lambda: |-
+          id(g_turbo_until_ms) = 0;
+          ESP_LOGI("fridge", "Turbo OFF via HA");
+
+  # Door override: when ON, system treats door as closed regardless
+  # of physical sensor. Interior light still follows real sensor.
+  - platform: template
+    name: "Door Override"
+    id: door_override
+    icon: "mdi:door-closed-lock"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+
+  - platform: template
+    name: "Vacation Mode"
+    id: vacation_mode
+    icon: "mdi:beach"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+# ----------------------------------------------------------------
+#  Binary sensors — physical & template
+# ----------------------------------------------------------------
+binary_sensor:
+  # Door (HIGH = open, pulled high on wire break = fail-safe open)
+  - platform: gpio
+    pin:
+      number: GPIO39
+      mode: INPUT
+    name: "Door"
+    id: door_sensor
+    device_class: door
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      # Door opened
+      - lambda: "id(g_door_open_ms) = millis();"
+      - light.turn_on:
+          id: interior_light
+          brightness: 100%
+    on_release:
+      # Door closed
+      - lambda: "id(g_door_open_ms) = 0;"
+      - delay: 3s
+      - light.turn_off: interior_light
+
+  # Settings button (active-low, external 4k7 pullup)
+  - platform: gpio
+    pin:
+      number: GPIO35
+      mode: INPUT
+      inverted: true
+    name: "Settings Button"
+    id: settings_btn
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      # Any press silences buzzer if active (10 min)
+      - lambda: |-
+          if (id(k2_relay).state) {
+            id(g_buzzer_silence_until) = millis() + 600000;
+            id(k2_relay).turn_off();
+            ESP_LOGI("fridge", "Buzzer silenced 10 min");
+          }
+    on_multi_click:
+      # Double press: toggle door override
+      - timing:
+          - ON for at most 0.5s
+          - OFF for at most 0.5s
+          - ON for at most 0.5s
+          - OFF for at least 0.3s
+        then:
+          - script.execute: btn_double_press
+      # Short press: cycle setpoint (0.5 s wait differentiates from double)
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.5s
+        then:
+          - script.execute: btn_short_press
+      # Long press (3 s): toggle turbo
+      - timing:
+          - ON for at least 3s
+        then:
+          - script.execute: btn_long_press
+
+  # HA-visible status (read-only)
+  - platform: template
+    name: "Compressor Running"
+    device_class: running
+    lambda: "return id(comp_relay).state;"
+
+  - platform: template
+    name: "Fan Running"
+    device_class: running
+    lambda: "return id(fan_relay).state;"
+
+  - platform: template
+    name: "Compressor Overtemp"
+    device_class: heat
+    lambda: "return id(g_comp_overtemp);"
+
+  - platform: template
+    name: "Overcurrent Fault"
+    device_class: problem
+    lambda: "return id(g_overcurrent_fault);"
+
+  - platform: template
+    name: "Blind Duty Cycle Active"
+    device_class: problem
+    icon: "mdi:thermometer-off"
+    lambda: |-
+      if (!id(g_boot_done)) return false;   // boot grace via shared flag
+      float u = id(temp_upper).state, l = id(temp_lower).state;
+      bool u_ok = !std::isnan(u) && u > -40.0f && u < 50.0f;
+      bool l_ok = !std::isnan(l) && l > -40.0f && l < 50.0f;
+      return !u_ok && !l_ok;
+
+  - platform: template
+    name: "Compressor Temp Sensor Fault"
+    device_class: problem
+    icon: "mdi:thermometer-alert"
+    lambda: |-
+      if (!id(g_boot_done)) return false;   // boot grace via shared flag
+      float t = id(temp_compressor).state;
+      return std::isnan(t) || t < -40.0f || t > 120.0f;
+
+  - platform: template
+    name: "Freezer Sensor Fault"
+    device_class: problem
+    icon: "mdi:thermometer-alert"
+    lambda: |-
+      if (!id(g_boot_done)) return false;
+      float t = id(temp_freezer).state;
+      return std::isnan(t) || t < -50.0f || t > 50.0f;
+
+  - platform: template
+    name: "Freezer Too Warm"
+    device_class: problem
+    icon: "mdi:thermometer-high"
+    lambda: "return id(g_freezer_warm_latched);"
+
+  - platform: template
+    name: "Freezer Too Cold"
+    device_class: problem
+    icon: "mdi:thermometer-low"
+    lambda: "return id(g_freezer_cold_latched);"
+
+  - platform: template
+    name: "Freezer Food Safety Alert"
+    device_class: safety
+    icon: "mdi:food-off"
+    lambda: "return id(g_freezer_unsafe_latched);"
+
+  - platform: template
+    name: "CT Sensor Fault"
+    device_class: problem
+    icon: "mdi:flash-alert"
+    lambda: "return id(g_no_current_count) >= 6;"
+
+  - platform: template
+    name: "Possible Capacitor Fault"
+    device_class: problem
+    icon: "mdi:capacitor"
+    lambda: "return id(g_intermittent_zeros) >= 5;"
+
+  - platform: template
+    name: "Food Safety Alert"
+    device_class: safety
+    icon: "mdi:food-off"
+    lambda: |-
+      if (id(g_food_unsafe_ms) == 0) return false;
+      return (uint32_t)(millis() - id(g_food_unsafe_ms)) > 7200000;
+
+  - platform: template
+    name: "Defrost Active"
+    icon: "mdi:snowflake-melt"
+    lambda: "return id(g_defrost_active);"
+
+  - platform: template
+    name: "Temp Rising While Cooling"
+    device_class: problem
+    icon: "mdi:thermometer-alert"
+    lambda: |-
+      if (!id(comp_relay).state) return false;
+      if (id(g_temp_history) < -900.0f) return false;
+      float t = id(temp_control).state;
+      if (std::isnan(t)) return false;
+      return t > id(g_temp_history) + 0.5f;
+
+  - platform: template
+    name: "High Duty Cycle"
+    device_class: problem
+    icon: "mdi:gauge-full"
+    lambda: |-
+      float amb = id(temp_ambient).state;
+      float thr = 0.85f;
+      if (!std::isnan(amb)) {
+        thr = 0.55f + amb * 0.01f;
+        if (thr < 0.60f) thr = 0.60f;
+        if (thr > 0.95f) thr = 0.95f;
+      }
+      return id(g_duty_pct) > thr;
+
+# ----------------------------------------------------------------
+#  Buttons — HA actions
+# ----------------------------------------------------------------
+button:
+  - platform: template
+    name: "Reset Overcurrent Fault"
+    icon: "mdi:alert-remove"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(g_overcurrent_fault) = false;
+          id(g_overcurrent_count) = 0;
+          ESP_LOGI("fridge", "Overcurrent fault RESET");
+
+  - platform: template
+    name: "Trigger Defrost"
+    icon: "mdi:snowflake-melt"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(g_defrost_active) = true;
+          id(g_defrost_start_ms) = millis();
+          id(g_defrost_comp_min) = 0;
+          ESP_LOGI("fridge", "Manual defrost triggered");
+
+  - platform: restart
+    name: "Restart"
+
+# ----------------------------------------------------------------
+#  Outputs — LEDs (active-low sink drivers)
+# ----------------------------------------------------------------
+output:
+  - platform: gpio
+    pin:
+      number: GPIO13
+      inverted: true
+    id: led1_out
+
+  - platform: gpio
+    pin:
+      number: GPIO32
+      inverted: true
+    id: led2_out
+
+  - platform: gpio
+    pin:
+      number: GPIO14
+      inverted: true
+    id: led3_out
+
+  - platform: ledc
+    pin: GPIO15
+    id: led_strip_pwm
+    frequency: 1000Hz
+
+# ----------------------------------------------------------------
+#  Lights — only interior light exposed to HA
+# ----------------------------------------------------------------
+light:
+  - platform: monochromatic
+    name: "Interior Light"
+    id: interior_light
+    output: led_strip_pwm
+
+# ----------------------------------------------------------------
+#  Scripts
+# ----------------------------------------------------------------
+script:
+  # Boot: LED self-test, sensor warmup, then enable control
+  - id: boot_sequence
+    then:
+      - output.turn_on: led1_out
+      - output.turn_on: led2_out
+      - output.turn_on: led3_out
+      - delay: 1s
+      - output.turn_off: led1_out
+      - delay: 200ms
+      - output.turn_off: led2_out
+      - delay: 200ms
+      - output.turn_off: led3_out
+      - delay: 30s
+      - lambda: |-
+          id(g_comp_stop_ms) = millis();   // enforce min-off after power loss
+          id(g_boot_done) = true;
+          ESP_LOGI("fridge", "Boot complete, control loop active");
+
+  # Short press: cycle target 2 → 4 → 6 → 8 → 2 °C
+  - id: btn_short_press
+    then:
+      - lambda: |-
+          float sp = id(target_temp).state;
+          if (sp < 3.0f)      sp = 4.0f;
+          else if (sp < 5.0f) sp = 6.0f;
+          else if (sp < 7.0f) sp = 8.0f;
+          else                sp = 2.0f;
+          auto call = id(target_temp).make_call();
+          call.set_value(sp);
+          call.perform();
+          id(g_setpoint_show_until) = millis() + 3000;
+          ESP_LOGI("fridge", "Setpoint → %.1f °C", sp);
+
+  # Double press: toggle door override
+  - id: btn_double_press
+    then:
+      - lambda: |-
+          bool was_on = id(door_override).state;
+          if (was_on) {
+            id(door_override).turn_off();
+            ESP_LOGI("fridge", "Door override OFF (via button)");
+          } else {
+            id(door_override).turn_on();
+            ESP_LOGI("fridge", "Door override ON (via button)");
+          }
+      # LED3 feedback: 2 flashes = override ON, 1 flash = override OFF
+      - output.turn_on: led3_out
+      - delay: 200ms
+      - output.turn_off: led3_out
+      - delay: 200ms
+      - if:
+          condition:
+            switch.is_on: door_override
+          then:
+            - output.turn_on: led3_out
+            - delay: 200ms
+            - output.turn_off: led3_out
+
+  # Long press: toggle turbo (30 min forced cooling)
+  - id: btn_long_press
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          if ((int32_t)(id(g_turbo_until_ms) - now) > 0) {
+            id(g_turbo_until_ms) = 0;
+            ESP_LOGI("fridge", "Turbo CANCELLED");
+          } else {
+            id(g_turbo_until_ms) = now + 1800000;
+            ESP_LOGI("fridge", "Turbo ON (30 min)");
+          }
+      # Triple-flash confirmation
+      - output.turn_on: led1_out
+      - output.turn_on: led2_out
+      - output.turn_on: led3_out
+      - delay: 150ms
+      - output.turn_off: led1_out
+      - output.turn_off: led2_out
+      - output.turn_off: led3_out
+      - delay: 150ms
+      - output.turn_on: led1_out
+      - output.turn_on: led2_out
+      - output.turn_on: led3_out
+      - delay: 150ms
+      - output.turn_off: led1_out
+      - output.turn_off: led2_out
+      - output.turn_off: led3_out
+      - delay: 150ms
+      - output.turn_on: led1_out
+      - output.turn_on: led2_out
+      - output.turn_on: led3_out
+      - delay: 150ms
+      - output.turn_off: led1_out
+      - output.turn_off: led2_out
+      - output.turn_off: led3_out
+
+  # Inrush capture: 5 forced CT samples across the first ~2.2 s after
+  # compressor relay closes. Each component.update triggers a 200 ms
+  # RMS measurement; the ct_clamp's on_value lambda latches the peak
+  # into g_inrush_peak (gated to first 3 s after g_comp_start_ms).
+  - id: capture_inrush
+    mode: restart
+    then:
+      - lambda: "id(g_inrush_peak) = 0.0f;"
+      - delay: 200ms
+      - component.update: compressor_current
+      - delay: 400ms
+      - component.update: compressor_current
+      - delay: 400ms
+      - component.update: compressor_current
+      - delay: 400ms
+      - component.update: compressor_current
+      - delay: 400ms
+      - component.update: compressor_current
+
+# ----------------------------------------------------------------
+#  Intervals — main control loop & LED update
+# ----------------------------------------------------------------
+interval:
+  # === MAIN CONTROL LOOP (every 5 s) ===
+  - interval: 5s
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          if (!id(g_boot_done)) return;
+
+          // ---- System disabled: everything off ----
+          if (!id(system_enable).state) {
+            if (id(comp_relay).state) {
+              id(comp_relay).turn_off();
+              id(g_comp_stop_ms) = now;
+            }
+            if (id(fan_relay).state) id(fan_relay).turn_off();
+            if (id(k2_relay).state) id(k2_relay).turn_off();
+            return;
+          }
+
+          // ---- Read sensors ----
+          float t_upper = id(temp_upper).state;
+          float t_lower = id(temp_lower).state;
+          float t_comp  = id(temp_compressor).state;
+          float current = id(compressor_current).state;
+          float setpoint = id(target_temp).state;
+          if (std::isnan(setpoint)) setpoint = 4.0f;
+          // Vacation mode overrides setpoint
+          if (id(vacation_mode).state) {
+            float vt = id(vacation_temp).state;
+            if (!std::isnan(vt)) setpoint = vt;
+          }
+          bool comp_on = id(comp_relay).state;
+
+          // Door: override switch makes system treat door as closed
+          bool door_phys = id(door_sensor).state;
+          bool door_open = door_phys && !id(door_override).state;
+
+          // ---- Sensor sanity (DS18B20 85 °C = POR, out-of-range = dead) ----
+          bool upper_ok = !std::isnan(t_upper) && t_upper > -40.0f && t_upper < 50.0f;
+          bool lower_ok = !std::isnan(t_lower) && t_lower > -40.0f && t_lower < 50.0f;
+          bool comp_temp_ok = !std::isnan(t_comp) && t_comp > -40.0f && t_comp < 120.0f;
+
+          // ---- Control temperature ----
+          float t_ctrl = NAN;
+          bool blind_mode = false;
+          if (upper_ok && lower_ok) t_ctrl = (t_upper + t_lower) / 2.0f;
+          else if (upper_ok)        t_ctrl = t_upper;
+          else if (lower_ok)        t_ctrl = t_lower;
+          else                      blind_mode = true;
+
+          // ---- Safety: compressor overtemp (hysteresis) ----
+          if (comp_temp_ok) {
+            if (t_comp > 75.0f && !id(g_comp_overtemp)) {
+              id(g_comp_overtemp) = true;
+              ESP_LOGW("fridge", "Compressor OVERTEMP (%.1f °C)", t_comp);
+            } else if (t_comp < 55.0f && id(g_comp_overtemp)) {
+              id(g_comp_overtemp) = false;
+              ESP_LOGI("fridge", "Compressor temp OK (%.1f °C)", t_comp);
+            }
+          } else if (!std::isnan(t_comp)) {
+            static bool logged_cf = false;
+            if (!logged_cf) {
+              ESP_LOGW("fridge", "Comp temp sensor FAULT (%.1f) — overtemp disabled", t_comp);
+              logged_cf = true;
+            }
+          }
+
+          // ---- Safety: overcurrent (3 consecutive = 15 s) ----
+          if (!std::isnan(current) && current > 5.0f && comp_on) {
+            if (id(g_overcurrent_count) < 255) id(g_overcurrent_count)++;
+            if (id(g_overcurrent_count) >= 3 && !id(g_overcurrent_fault)) {
+              id(g_overcurrent_fault) = true;
+              ESP_LOGW("fridge", "OVERCURRENT FAULT (%.2f A)", current);
+            }
+          } else {
+            id(g_overcurrent_count) = 0;
+          }
+
+          // ---- CT / capacitor fault ----
+          if (comp_on && (uint32_t)(now - id(g_comp_start_ms)) > 60000) {
+            if (!std::isnan(current) && current < 0.1f) {
+              if (id(g_no_current_count) < 255) id(g_no_current_count)++;
+              if (id(g_no_current_count) == 6)
+                ESP_LOGW("fridge", "CT FAULT — no current while compressor ON");
+              if (id(g_intermittent_zeros) < 255) id(g_intermittent_zeros)++;
+              if (id(g_intermittent_zeros) == 5)
+                ESP_LOGW("fridge", "POSSIBLE CAP FAULT — overload cycling");
+            } else {
+              id(g_no_current_count) = 0;
+            }
+          } else if (!comp_on) {
+            id(g_no_current_count) = 0;
+          }
+
+          // ---- Food safety: track time above 8 °C ----
+          if (!std::isnan(t_ctrl)) {
+            if (t_ctrl > 8.0f) {
+              if (id(g_food_unsafe_ms) == 0) {
+                id(g_food_unsafe_ms) = now;
+                ESP_LOGW("fridge", "Food safety: temp above 8 °C (%.1f)", t_ctrl);
+              }
+            } else {
+              if (id(g_food_unsafe_ms) > 0)
+                ESP_LOGI("fridge", "Food safety: temp back below 8 °C");
+              id(g_food_unsafe_ms) = 0;
+            }
+          }
+
+          // ---- Freezer temperature monitoring (informational - no control action) ----
+          float t_frz = id(temp_freezer).state;
+          if (!std::isnan(t_frz) && t_frz > -50.0f && t_frz < 50.0f) {
+            float warm_thr = id(freezer_warm_thr).state;
+            float cold_thr = id(freezer_cold_thr).state;
+            float crit_thr = id(freezer_crit_thr).state;
+            if (std::isnan(warm_thr)) warm_thr = -12.0f;
+            if (std::isnan(cold_thr)) cold_thr = -28.0f;
+            if (std::isnan(crit_thr)) crit_thr =   0.0f;
+            // Too warm: timer arms on breach, latches after 30 min sustained,
+            // clears when temp drops 1 °C below threshold (hysteresis)
+            if (t_frz > warm_thr) {
+              if (id(g_freezer_warm_ms) == 0) {
+                id(g_freezer_warm_ms) = now;
+                ESP_LOGW("fridge", "Freezer above %.1f °C (%.1f) — arming", warm_thr, t_frz);
+              }
+              if (!id(g_freezer_warm_latched) &&
+                  (uint32_t)(now - id(g_freezer_warm_ms)) > 1800000) {
+                id(g_freezer_warm_latched) = true;
+                ESP_LOGW("fridge", "Freezer WARM alarm LATCHED");
+              }
+            } else if (t_frz < warm_thr - 1.0f) {
+              id(g_freezer_warm_ms) = 0;
+              if (id(g_freezer_warm_latched)) {
+                id(g_freezer_warm_latched) = false;
+                ESP_LOGI("fridge", "Freezer warm alarm cleared (hysteresis)");
+              }
+            }
+            // Too cold (mirror logic, 1 °C hysteresis above cold_thr)
+            if (t_frz < cold_thr) {
+              if (id(g_freezer_cold_ms) == 0) {
+                id(g_freezer_cold_ms) = now;
+                ESP_LOGW("fridge", "Freezer below %.1f °C (%.1f) — arming", cold_thr, t_frz);
+              }
+              if (!id(g_freezer_cold_latched) &&
+                  (uint32_t)(now - id(g_freezer_cold_ms)) > 1800000) {
+                id(g_freezer_cold_latched) = true;
+                ESP_LOGW("fridge", "Freezer COLD alarm LATCHED");
+              }
+            } else if (t_frz > cold_thr + 1.0f) {
+              id(g_freezer_cold_ms) = 0;
+              if (id(g_freezer_cold_latched)) {
+                id(g_freezer_cold_latched) = false;
+                ESP_LOGI("fridge", "Freezer cold alarm cleared (hysteresis)");
+              }
+            }
+            // Critical (food safety): 2 h sustained above critical threshold
+            if (t_frz > crit_thr) {
+              if (id(g_freezer_unsafe_ms) == 0) {
+                id(g_freezer_unsafe_ms) = now;
+                ESP_LOGW("fridge", "Freezer FOOD SAFETY arming: above %.1f °C (%.1f)", crit_thr, t_frz);
+              }
+              if (!id(g_freezer_unsafe_latched) &&
+                  (uint32_t)(now - id(g_freezer_unsafe_ms)) > 7200000) {
+                id(g_freezer_unsafe_latched) = true;
+                ESP_LOGW("fridge", "Freezer FOOD SAFETY LATCHED");
+              }
+            } else {
+              id(g_freezer_unsafe_ms) = 0;
+              if (id(g_freezer_unsafe_latched)) {
+                id(g_freezer_unsafe_latched) = false;
+                ESP_LOGI("fridge", "Freezer food safety cleared");
+              }
+            }
+          }
+
+          // ---- Defrost management ----
+          if (id(g_defrost_active)) {
+            uint32_t dur_ms = (uint32_t)(id(defrost_duration_min).state) * 60000;
+            if (dur_ms < 300000) dur_ms = 300000;   // floor 5 min
+            if ((uint32_t)(now - id(g_defrost_start_ms)) >= dur_ms) {
+              id(g_defrost_active) = false;
+              ESP_LOGI("fridge", "DEFROST complete");
+            }
+          }
+
+          // ---- Door open duration ----
+          uint32_t door_dur = 0;
+          if (door_open && id(g_door_open_ms) > 0) {
+            door_dur = (uint32_t)(now - id(g_door_open_ms));
+          }
+
+          // ---- Turbo active? ----
+          bool turbo = (int32_t)(id(g_turbo_until_ms) - now) > 0;
+
+          // ---- Determine cooling demand ----
+          bool want = false;
+          if (id(g_defrost_active)) {
+            want = false;                             // compressor OFF during defrost
+          } else if (blind_mode) {
+            // BLIND DUTY CYCLE — both chamber sensors dead
+            uint32_t on_ms  = (uint32_t)(id(duty_on_min).state) * 60000;
+            uint32_t off_ms = (uint32_t)(id(duty_off_min).state) * 60000;
+            if (on_ms < 300000)  on_ms  = 300000;
+            if (off_ms < 300000) off_ms = 300000;
+            if (id(g_duty_phase_ms) == 0) {
+              id(g_duty_phase_ms) = now;
+              id(g_duty_on) = true;
+              ESP_LOGW("fridge", "BLIND DUTY CYCLE active");
+            }
+            uint32_t phase = (uint32_t)(now - id(g_duty_phase_ms));
+            if (id(g_duty_on) && phase >= on_ms) {
+              id(g_duty_on) = false; id(g_duty_phase_ms) = now;
+            } else if (!id(g_duty_on) && phase >= off_ms) {
+              id(g_duty_on) = true;  id(g_duty_phase_ms) = now;
+            }
+            want = id(g_duty_on);
+            if (turbo) want = true;
+          } else {
+            id(g_duty_phase_ms) = 0;              // reset when sensors recover
+            if (turbo) {
+              want = true;
+            } else if (t_ctrl > setpoint + 1.5f) {
+              want = true;
+            } else if (t_ctrl < setpoint - 0.5f) {
+              want = false;
+            } else {
+              want = comp_on;                     // dead-band: maintain
+            }
+          }
+
+          // ---- Safety overrides (always win) ----
+          if (id(g_overcurrent_fault)) want = false;
+          if (id(g_comp_overtemp))     want = false;
+          if (door_dur > 300000)       want = false;
+
+          // ---- Minimum off time (3 min) ----
+          id(g_comp_blocked) = false;
+          if (want && !comp_on && id(g_comp_stop_ms) != 0) {
+            if ((uint32_t)(now - id(g_comp_stop_ms)) < 180000) {
+              want = false;
+              id(g_comp_blocked) = true;
+            }
+          }
+
+          // ---- Apply compressor state ----
+          if (want && !comp_on) {
+            id(comp_relay).turn_on();
+            id(g_comp_start_ms) = now;
+            id(g_comp_starts)++;
+            id(g_intermittent_zeros) = 0;
+            id(g_eff_start_temp) = std::isnan(t_ctrl) ? -999.0f : t_ctrl;
+            ESP_LOGI("fridge", "Compressor ON  (t=%.1f sp=%.1f %s%s)",
+                     std::isnan(t_ctrl) ? -999.0f : t_ctrl, setpoint,
+                     turbo ? "TURBO " : "", blind_mode ? "BLIND" : "");
+          } else if (!want && comp_on) {
+            id(comp_relay).turn_off();
+            id(g_comp_stop_ms) = now;
+            // Cooling efficiency: °C per minute of runtime
+            if (id(g_eff_start_temp) > -900.0f && !std::isnan(t_ctrl)) {
+              float run_min = (float)((uint32_t)(now - id(g_comp_start_ms))) / 60000.0f;
+              if (run_min > 5.0f) {
+                id(g_eff_value) = (id(g_eff_start_temp) - t_ctrl) / run_min;
+              }
+            }
+            ESP_LOGI("fridge", "Compressor OFF (t=%.1f sp=%.1f eff=%.3f%s)",
+                     std::isnan(t_ctrl) ? -999.0f : t_ctrl, setpoint,
+                     id(g_eff_value), blind_mode ? " BLIND" : "");
+          }
+
+          // ---- Fan logic ----
+          bool want_fan = false;
+          if (id(g_defrost_active)) {
+            want_fan = true;                      // fan ON during defrost (melt ice)
+          } else if (id(comp_relay).state) {
+            want_fan = true;
+            id(g_fan_runon_until) = now + 120000;
+          } else if ((int32_t)(id(g_fan_runon_until) - now) > 0) {
+            want_fan = true;                      // 2 min run-on
+          }
+          if (door_dur > 60000 && !id(g_defrost_active)) want_fan = false;
+
+          if (want_fan && !id(fan_relay).state)  id(fan_relay).turn_on();
+          if (!want_fan && id(fan_relay).state)   id(fan_relay).turn_off();
+
+          // ---- Buzzer (K2 piezo) ----
+          bool should_buzz = false;
+          bool silenced = (int32_t)(id(g_buzzer_silence_until) - now) > 0;
+          if (!silenced) {
+            // Critical: continuous buzz
+            if (id(g_overcurrent_fault))  should_buzz = true;
+            if (id(g_comp_overtemp))      should_buzz = true;
+            if (blind_mode)               should_buzz = true;
+            // Food safety: continuous
+            if (id(g_food_unsafe_ms) > 0 &&
+                (uint32_t)(now - id(g_food_unsafe_ms)) > 7200000)
+              should_buzz = true;
+            // Door warning: intermittent (5 s on / 5 s off)
+            if (door_dur > 120000 && ((now / 5000) % 2 == 0))
+              should_buzz = true;
+          }
+          if (should_buzz && !id(k2_relay).state) id(k2_relay).turn_on();
+          if (!should_buzz && id(k2_relay).state)  id(k2_relay).turn_off();
+
+          // ---- Runtime + defrost counter ----
+          if (id(comp_relay).state) {
+            id(g_runtime_tick)++;
+            id(g_defrost_tick)++;
+            if (id(g_defrost_tick) >= 12) {       // every 60 s of compressor time
+              id(g_defrost_tick) = 0;
+              id(g_defrost_comp_min)++;
+            }
+            // Auto-defrost trigger
+            uint16_t df_thresh = (uint16_t)(id(defrost_interval_hours).state) * 60;
+            if (df_thresh < 60) df_thresh = 60;
+            if (id(g_defrost_comp_min) >= df_thresh && !id(g_defrost_active)) {
+              id(g_defrost_active) = true;
+              id(g_defrost_start_ms) = now;
+              id(g_defrost_comp_min) = 0;
+              ESP_LOGI("fridge", "DEFROST started (%d min)",
+                       (int)id(defrost_duration_min).state);
+            }
+            // Total runtime persistence (every 10 min)
+            if (id(g_runtime_tick) >= 120) {
+              id(g_runtime_tick) = 0;
+              id(g_comp_runtime_min) += 10;
+            }
+          } else {
+            if (id(g_runtime_tick) >= 12) {
+              id(g_comp_runtime_min) += (id(g_runtime_tick) * 5 + 30) / 60;
+            }
+            id(g_runtime_tick) = 0;
+            id(g_defrost_tick) = 0;
+          }
+
+          // ---- Duty cycle EMA (~1 h time constant) ----
+          float alpha = 1.0f / 720.0f;
+          id(g_duty_pct) = id(g_duty_pct) * (1.0f - alpha)
+                         + (id(comp_relay).state ? alpha : 0.0f);
+
+          // ---- Temperature history (10 min window for rate-of-change) ----
+          id(g_temp_hist_tick)++;
+          if (id(g_temp_hist_tick) >= 120) {       // 120 × 5 s = 10 min
+            id(g_temp_hist_tick) = 0;
+            if (!std::isnan(t_ctrl)) id(g_temp_history) = t_ctrl;
+          }
+
+          // ---- Interior light: follows physical door (ignores override) ----
+          if (door_phys && !id(interior_light).current_values.is_on()) {
+            auto call = id(interior_light).turn_on();
+            call.set_brightness(1.0f);
+            call.perform();
+          }
+
+  # === LED UPDATE (every 500 ms) ===
+  - interval: 500ms
+    then:
+      - lambda: |-
+          uint32_t now = millis();
+          if (!id(g_boot_done)) return;
+
+          id(g_led_tick)++;
+          bool slow_blink = (id(g_led_tick) % 4) < 2;   // 2 s period
+          bool fast_blink = (id(g_led_tick) % 2) == 0;   // 1 s period
+
+          // ---- System disabled: LED1 slow pulse, rest off ----
+          if (!id(system_enable).state) {
+            if (slow_blink) id(led1_out).turn_on(); else id(led1_out).turn_off();
+            id(led2_out).turn_off();
+            id(led3_out).turn_off();
+            return;
+          }
+
+          // ---- Setpoint display (3 s after button press / HA change) ----
+          if ((int32_t)(id(g_setpoint_show_until) - now) > 0) {
+            float sp = id(target_temp).state;
+            int level;
+            if (sp <= 2.5f)      level = 1;   // 2 °C
+            else if (sp <= 4.5f) level = 2;   // 4 °C
+            else if (sp <= 6.5f) level = 3;   // 6 °C
+            else                 level = 4;   // 8 °C
+
+            if (level == 4) {
+              // All three blink
+              if (fast_blink) {
+                id(led1_out).turn_on(); id(led2_out).turn_on(); id(led3_out).turn_on();
+              } else {
+                id(led1_out).turn_off(); id(led2_out).turn_off(); id(led3_out).turn_off();
+              }
+            } else {
+              if (level >= 1) id(led1_out).turn_on(); else id(led1_out).turn_off();
+              if (level >= 2) id(led2_out).turn_on(); else id(led2_out).turn_off();
+              if (level >= 3) id(led3_out).turn_on(); else id(led3_out).turn_off();
+            }
+            return;
+          }
+
+          // ---- Normal status display ----
+          float u = id(temp_upper).state, l = id(temp_lower).state;
+          bool u_ok = !std::isnan(u) && u > -40.0f && u < 50.0f;
+          bool l_ok = !std::isnan(l) && l > -40.0f && l < 50.0f;
+          bool sensor_ok = u_ok || l_ok;
+          bool turbo = (int32_t)(id(g_turbo_until_ms) - now) > 0;
+          bool blind = !u_ok && !l_ok;
+
+          // LED1: system — solid = OK, fast blink = degraded/fault
+          if (sensor_ok && !id(g_overcurrent_fault)) {
+            id(led1_out).turn_on();
+          } else {
+            if (fast_blink) id(led1_out).turn_on(); else id(led1_out).turn_off();
+          }
+
+          // LED2: cooling — solid=running, fast blink=turbo,
+          //        slow blink=defrost, off=idle
+          if (turbo) {
+            if (fast_blink) id(led2_out).turn_on(); else id(led2_out).turn_off();
+          } else if (id(g_defrost_active)) {
+            if (slow_blink) id(led2_out).turn_on(); else id(led2_out).turn_off();
+          } else if (id(comp_relay).state) {
+            id(led2_out).turn_on();
+          } else {
+            id(led2_out).turn_off();
+          }
+
+          // LED3: alarm — solid = critical, slow blink = warning, off = OK
+          bool critical = id(g_overcurrent_fault) || id(g_comp_overtemp) || blind;
+          // Food safety is critical
+          if (id(g_food_unsafe_ms) > 0 &&
+              (uint32_t)(now - id(g_food_unsafe_ms)) > 7200000)
+            critical = true;
+
+          bool warning = false;
+          // Degraded sensor warnings
+          if (!u_ok && l_ok) warning = true;
+          if (u_ok && !l_ok) warning = true;
+          // Compressor temp / CT / cap faults
+          float tc = id(temp_compressor).state;
+          if (std::isnan(tc) || tc < -40.0f || tc > 120.0f) warning = true;
+          if (id(g_no_current_count) >= 6) warning = true;
+          if (id(g_intermittent_zeros) >= 5) warning = true;
+          // Temp rising while cooling
+          if (id(comp_relay).state && id(g_temp_history) > -900.0f) {
+            float tv = id(temp_control).state;
+            if (!std::isnan(tv) && tv > id(g_temp_history) + 0.5f) warning = true;
+          }
+          // High duty cycle (ambient-aware threshold)
+          float amb = id(temp_ambient).state;
+          float dthr = 0.85f;
+          if (!std::isnan(amb)) {
+            dthr = 0.55f + amb * 0.01f;
+            if (dthr < 0.60f) dthr = 0.60f;
+            if (dthr > 0.95f) dthr = 0.95f;
+          }
+          if (id(g_duty_pct) > dthr) warning = true;
+          // Door warning (effective, respects override)
+          bool door_eff = id(door_sensor).state && !id(door_override).state;
+          if (door_eff && id(g_door_open_ms) > 0) {
+            if ((uint32_t)(now - id(g_door_open_ms)) > 120000) warning = true;
+          }
+          if (id(g_comp_blocked)) warning = true;
+
+          if (critical) {
+            id(led3_out).turn_on();
+          } else if (warning) {
+            if (slow_blink) id(led3_out).turn_on(); else id(led3_out).turn_off();
+          } else {
+            id(led3_out).turn_off();
+          }

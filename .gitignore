@@ -1,0 +1,18 @@
+.pio/
+.vscode/
+*.bin
+*.elf
+*.map
+sdkconfig
+sdkconfig.old
+sdkconfig.fridgectl
+managed_components/
+dependencies.lock
+
+# Personal diagnostic exports / local logs / junk
+*.csv
+platform_install.txt
+claude --resume*
+
+# Keep the example, never commit real credentials
+src/secrets.h

@@ -1,0 +1,38 @@
+# ---- Partition table ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- OTA rollback ----
+# A freshly-OTA'd image boots in PENDING_VERIFY; the app must call
+# esp_ota_mark_app_valid_cancel_rollback() once it proves healthy
+# (see ota.cpp health-check task), otherwise the bootloader reverts
+# to the previous app slot on the next reset. No extra flash needed
+# (uses the existing otadata partition).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ---- Flash ----
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ---- Watchdogs (the whole point of the rewrite) ----
+# Task WDT at 10 s, only the control task is subscribed and it never blocks.
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# Interrupt WDT a bit more forgiving.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
+
+# ---- FreeRTOS ----
+CONFIG_FREERTOS_HZ=1000
+
+# ---- C++ ----
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# ---- HTTP server (used for OTA upload endpoint) ----
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# ---- Reduce log noise from wifi a touch ----
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,0 +1,5 @@
+## Only the IDF itself is required — DS18B20/OneWire is a self-contained
+## bit-banged driver (ow.cpp), so there are no external RMT-channel-hungry
+## managed components to fetch.
+dependencies:
+  idf: ">=5.1"
