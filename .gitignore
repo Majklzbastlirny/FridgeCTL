@@ -10,7 +10,7 @@ managed_components/
 dependencies.lock
 
 # Personal diagnostic exports / local logs / junk
-*.csv
+history*.csv
 platform_install.txt
 claude --resume*
 
