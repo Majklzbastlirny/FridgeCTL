@@ -150,7 +150,12 @@ static void control_tick(void) {
 
     // ---- Freezer temperature monitoring (informational) ----
     float t_frz = g.temp_freezer;
-    if (!isnan(t_frz) && t_frz > TEMP_FREEZER_MIN_C && t_frz < TEMP_FREEZER_MAX_C) {
+    if (!g.freezer_sensor_enable) {
+        // User-disabled freezer probe: clear any armed/latched freezer alarms so
+        // nothing lingers, and skip all freezer monitoring this tick.
+        g.freezer_warm_ms = g.freezer_cold_ms = g.freezer_unsafe_ms = 0;
+        g.freezer_warm_latched = g.freezer_cold_latched = g.freezer_unsafe_latched = false;
+    } else if (!isnan(t_frz) && t_frz > TEMP_FREEZER_MIN_C && t_frz < TEMP_FREEZER_MAX_C) {
         float warm_thr = g.freezer_warm_thr;
         float cold_thr = g.freezer_cold_thr;
         float crit_thr = g.freezer_crit_thr;
@@ -544,6 +549,7 @@ bool ctl_comp_temp_fault(void) {
 bool ctl_freezer_sensor_fault(void) {
     StateGuard lock;
     if (!g.boot_done) return false;
+    if (!g.freezer_sensor_enable) return false;   // user-disabled: not a fault
     float t = g.temp_freezer;
     return isnan(t) || t < TEMP_FREEZER_MIN_C || t > TEMP_FREEZER_MAX_C;
 }

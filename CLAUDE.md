@@ -299,6 +299,15 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
   `commit()` — a NAN only overwrites the published value after `MISS_LIMIT` (3)
   consecutive failed cycles, holding the last good value meanwhile. A real dead
   sensor still trips within ~1.5 min; a one-off glitch is now invisible.
+- **`freezer_sensor_enable` switch (persisted, default ON).** Lets the user
+  cleanly disable the freezer probe when it's removed/disconnected (the cable was
+  breaking the freezer door gasket → frost crust). When OFF: `control_tick`
+  skips the freezer monitoring block **and clears any armed/latched freezer
+  alarms**, and `ctl_freezer_sensor_fault()` returns false (no permanent fault
+  binary). Wired as a normal `SWITCHES[]` entry (`"freezer_sensor"`,
+  `mdi:thermometer-off`) → auto HA discovery + web control + command routing;
+  persisted in NVS as `frz_sens_en`. Freezer probe is on the shared ambient bus
+  (by ROM addr), so disabling/removing it doesn't affect the ambient sensor.
 
 ## Status & next steps (as of 2026-06)
 

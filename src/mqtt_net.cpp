@@ -85,6 +85,8 @@ static bool sw_get_doorovr(void){ StateGuard l; return g.door_override; }
 static void sw_set_doorovr(bool v){ StateGuard l; g.door_override = v; nvs_store_mark_dirty(); }
 static bool sw_get_vac(void){ StateGuard l; return g.vacation_mode; }
 static void sw_set_vac(bool v){ StateGuard l; g.vacation_mode = v; nvs_store_mark_dirty(); }
+static bool sw_get_frzsens(void){ StateGuard l; return g.freezer_sensor_enable; }
+static void sw_set_frzsens(bool v){ StateGuard l; g.freezer_sensor_enable = v; nvs_store_mark_dirty(); }
 static bool sw_get_k1(void){ StateGuard l; return g.k1_on; }
 static void sw_set_k1(bool v){ StateGuard l; g.k1_on = v; relay_k1(v); }
 
@@ -188,6 +190,7 @@ static const SwitchEnt SWITCHES[] = {
   {"turbo","Turbo Mode","mdi:snowflake-alert",sw_get_turbo,sw_set_turbo},
   {"door_override","Door Override","mdi:door-closed-lock",sw_get_doorovr,sw_set_doorovr},
   {"vacation_mode","Vacation Mode","mdi:beach",sw_get_vac,sw_set_vac},
+  {"freezer_sensor","Freezer Sensor","mdi:thermometer-off",sw_get_frzsens,sw_set_frzsens},
   {"k1_spare","K1 Spare","mdi:toggle-switch",sw_get_k1,sw_set_k1},
 };
 

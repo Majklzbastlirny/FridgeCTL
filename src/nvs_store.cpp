@@ -77,6 +77,7 @@ void nvs_store_load(void) {
     get_bool(h, "sys_en",   &g.system_enable);
     get_bool(h, "door_ovr", &g.door_override);
     get_bool(h, "vac_mode", &g.vacation_mode);
+    get_bool(h, "frz_sens_en", &g.freezer_sensor_enable);
     nvs_close(h);
     ESP_LOGI(TAG, "loaded config (starts=%lu runtime=%lu min)",
              (unsigned long)g.comp_starts, (unsigned long)g.comp_runtime_min);
@@ -111,6 +112,7 @@ void nvs_store_save(void) {
         nvs_set_u8(h, "sys_en",   g.system_enable ? 1 : 0);
         nvs_set_u8(h, "door_ovr", g.door_override ? 1 : 0);
         nvs_set_u8(h, "vac_mode", g.vacation_mode ? 1 : 0);
+        nvs_set_u8(h, "frz_sens_en", g.freezer_sensor_enable ? 1 : 0);
     }
     nvs_commit(h);
     nvs_close(h);

@@ -155,9 +155,14 @@ Open a browser to the device's address.
 **Control page — `http://<device-ip>/control`**
 - **Password protected** (username `admin` by default; password is the one set
   when the firmware was built).
-- Full control: every switch (System Enable, Turbo, Vacation, Door Override, K1
-  spare), every setpoint and configuration value, action buttons (Reset
-  Overcurrent, Trigger Defrost, Restart), and **firmware upload**.
+- Full control: every switch (System Enable, Turbo, Vacation, Door Override,
+  Freezer Sensor, K1 spare), every setpoint and configuration value, action
+  buttons (Reset Overcurrent, Trigger Defrost, Restart), and **firmware upload**.
+
+> **Freezer Sensor** switch: turn this **off** if you remove or disconnect the
+> freezer probe. It suppresses the freezer fault and all freezer alarms so a
+> missing probe doesn't show a permanent fault. Turn it back on after the probe
+> is reconnected.
 
 ### Home Assistant
 

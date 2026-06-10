@@ -119,6 +119,8 @@ struct AppState {
     bool     system_enable    = true;    // persist (default ON)
     bool     door_override    = false;   // persist (default OFF)
     bool     vacation_mode    = false;   // persist (default OFF)
+    bool     freezer_sensor_enable = true; // persist (default ON); OFF = ignore
+                                           // freezer probe (no fault, no alarms)
 
     // ---- Net status (for text/diag sensors) ----
     bool     wifi_connected   = false;
