@@ -98,6 +98,11 @@ under one `FridgeCTL` device. Availability uses an LWT on
 - **DS18B20 addresses**: the ambient bus (GPIO33) carries two sensors,
   matched by ROM code `ADDR_AMBIENT` / `ADDR_FREEZER`. If one reads as
   unavailable, check the boot log and update these.
+- **Per-sensor temperature offsets**: each probe has a runtime-settable trim
+  (−5…+5 °C, default 0) exposed as a *Temp Offset* number in Home Assistant and
+  the web control page — no rebuild needed. Added to the raw reading before it's
+  displayed/alarmed/used for control, and persisted in NVS. See MANUAL.md for
+  how to estimate the offsets from an all-at-ambient soak.
 - All control thresholds (setpoint hysteresis, min-off time, overtemp,
   overcurrent, freezer/defrost/food-safety timers) are `#define`s near the
   bottom of `config.h`, named to match the ESPHome originals.
