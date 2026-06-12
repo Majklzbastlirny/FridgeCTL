@@ -73,6 +73,12 @@ void nvs_store_load(void) {
     get_f(h, "frz_warm",    &g.freezer_warm_thr);
     get_f(h, "frz_cold",    &g.freezer_cold_thr);
     get_f(h, "frz_crit",    &g.freezer_crit_thr);
+    // Per-sensor calibration offsets
+    get_f(h, "off_upper",   &g.off_upper);
+    get_f(h, "off_lower",   &g.off_lower);
+    get_f(h, "off_comp",    &g.off_compressor);
+    get_f(h, "off_amb",     &g.off_ambient);
+    get_f(h, "off_frz",     &g.off_freezer);
     // Switches
     get_bool(h, "sys_en",   &g.system_enable);
     get_bool(h, "door_ovr", &g.door_override);
@@ -109,6 +115,11 @@ void nvs_store_save(void) {
         set_f(h, "frz_warm",    g.freezer_warm_thr);
         set_f(h, "frz_cold",    g.freezer_cold_thr);
         set_f(h, "frz_crit",    g.freezer_crit_thr);
+        set_f(h, "off_upper",   g.off_upper);
+        set_f(h, "off_lower",   g.off_lower);
+        set_f(h, "off_comp",    g.off_compressor);
+        set_f(h, "off_amb",     g.off_ambient);
+        set_f(h, "off_frz",     g.off_freezer);
         nvs_set_u8(h, "sys_en",   g.system_enable ? 1 : 0);
         nvs_set_u8(h, "door_ovr", g.door_override ? 1 : 0);
         nvs_set_u8(h, "vac_mode", g.vacation_mode ? 1 : 0);

@@ -140,7 +140,7 @@ static esp_err_t view_get(httpd_req_t *req) {
 }
 
 static esp_err_t state_get(httpd_req_t *req) {
-    static char json[6144];           // static: keep it off the small task stack
+    static char json[8192];           // static: keep it off the small task stack
     int len = web_build_state_json(json, sizeof(json));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, len);

@@ -182,6 +182,25 @@ do on the web control page you can also do from Home Assistant.
 | Defrost Interval | 4–24 h | How much compressor run-time triggers an auto-defrost |
 | Defrost Duration | 5–30 min | How long a defrost lasts |
 | Freezer Warm / Cold / Critical Thresholds | various | When freezer alarms trigger |
+| Upper / Lower / Compressor / Ambient / Freezer Temp Offset | −5…+5 °C | Per-sensor calibration trim added to that probe's reading |
+
+### Calibrating the temperature sensors
+
+Each DS18B20 has a small fixed error (the part is rated ±0.5 °C, and some are
+worse). The five **Temp Offset** numbers let you trim each probe individually;
+the offset is **added to the raw reading** before it is shown, alarmed on, and
+used for control. Default is **0** (no correction).
+
+To estimate offsets without a reference thermometer: switch the system **off**,
+leave all probes in the **same still-air spot** for a few hours so they settle
+to one true temperature, then read each value. Take the **average of the five**
+as your best guess of the real temperature and set each probe's offset to
+*(average − that probe's reading)*. A clamp/lab thermometer makes this exact —
+then offset = *(reference − reading)*. Re-check after any probe is moved into a
+glycol vial, since the thermal path changes slightly.
+
+> The offsets only shift what the sensors report; they do **not** change any
+> setpoint or threshold. Set offsets first, then tune Target Temperature.
 
 ### Alarm states (the "Alarm State" value)
 

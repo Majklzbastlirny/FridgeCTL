@@ -308,6 +308,23 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
   `mdi:thermometer-off`) → auto HA discovery + web control + command routing;
   persisted in NVS as `frz_sens_en`. Freezer probe is on the shared ambient bus
   (by ROM addr), so disabling/removing it doesn't affect the ambient sensor.
+- **Per-sensor temperature calibration offsets (5× persisted NUMBERs, default 0).**
+  Each DS18B20 reading gets a `±5 °C` trim added before publishing. Fields
+  `g.off_upper/off_lower/off_compressor/off_ambient/off_freezer` (app_state.h),
+  applied in `sensors.cpp` `commit()` — the offset is added to a *valid* reading
+  only (a NAN/fault is never shifted), under the state lock, so every downstream
+  consumer (control, MQTT, web) sees the corrected value. Exposed as five
+  `NUMBERS[]` entries (`off_upper`…`off_freezer`, step 0.1, `cfg=true`) via the
+  `NSET` macro → auto HA discovery + web control + command routing; persisted in
+  NVS as `off_upper/off_lower/off_comp/off_amb/off_frz`. Motivation: a stabilised
+  all-at-ambient soak (`history (49).csv`) showed a ~1.7 °C spread between probes
+  that was constant across every time window (= genuine fixed offset, not drift).
+  With no truth sensor, estimate offsets relative to the 5-sensor group mean
+  (≈17.1 °C in that soak): freezer −0.9 and ambient +0.8 were the clear outliers;
+  compressor was the group anchor (~0). User sets the actual values in HA/web.
+  Note: bumped the web `/api/state` JSON buffer in `ota.cpp` 6144→8192 to keep
+  headroom after adding 5 entities (silent snprintf truncation would corrupt the
+  whole control page).
 
 ## Status & next steps (as of 2026-06)
 

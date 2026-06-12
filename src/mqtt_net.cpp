@@ -103,6 +103,11 @@ NSET(vac_temp,   vacation_temp,          5.0f,  12.0f)
 NSET(frz_warm,   freezer_warm_thr,     -20.0f,   0.0f)
 NSET(frz_cold,   freezer_cold_thr,     -40.0f, -15.0f)
 NSET(frz_crit,   freezer_crit_thr,     -10.0f,  10.0f)
+NSET(off_upper,  off_upper,             -5.0f,   5.0f)
+NSET(off_lower,  off_lower,             -5.0f,   5.0f)
+NSET(off_comp,   off_compressor,        -5.0f,   5.0f)
+NSET(off_amb,    off_ambient,           -5.0f,   5.0f)
+NSET(off_frz,    off_freezer,           -5.0f,   5.0f)
 
 // --- text getters ---
 static void tg_ip(char *b, size_t n){ StateGuard l; strlcpy(b, g.ip_addr, n); }
@@ -204,6 +209,11 @@ static const NumberEnt NUMBERS[] = {
   {"freezer_warm_thr","Freezer Warm Threshold","°C","mdi:thermometer-high",-20.0f,0.0f,0.5f,true,ng_frz_warm,ns_frz_warm},
   {"freezer_cold_thr","Freezer Cold Threshold","°C","mdi:thermometer-low",-40.0f,-15.0f,1.0f,true,ng_frz_cold,ns_frz_cold},
   {"freezer_crit_thr","Freezer Critical Threshold","°C","mdi:food-off",-10.0f,10.0f,1.0f,true,ng_frz_crit,ns_frz_crit},
+  {"off_upper","Upper Temp Offset","°C","mdi:thermometer-plus",-5.0f,5.0f,0.1f,true,ng_off_upper,ns_off_upper},
+  {"off_lower","Lower Temp Offset","°C","mdi:thermometer-plus",-5.0f,5.0f,0.1f,true,ng_off_lower,ns_off_lower},
+  {"off_compressor","Compressor Temp Offset","°C","mdi:thermometer-plus",-5.0f,5.0f,0.1f,true,ng_off_comp,ns_off_comp},
+  {"off_ambient","Ambient Temp Offset","°C","mdi:thermometer-plus",-5.0f,5.0f,0.1f,true,ng_off_amb,ns_off_amb},
+  {"off_freezer","Freezer Temp Offset","°C","mdi:thermometer-plus",-5.0f,5.0f,0.1f,true,ng_off_frz,ns_off_frz},
 };
 
 static const ButtonEnt BUTTONS[] = {

@@ -128,10 +128,13 @@ static void ct_task(void *arg) {
 #define MISS_LIMIT 3
 
 // Commit a reading with debounce. Updates *out only on success or once the
-// miss counter passes the limit (then publishes NAN = real fault).
-static void commit(float reading, float *out, uint8_t *miss) {
+// miss counter passes the limit (then publishes NAN = real fault). The
+// per-sensor calibration offset is applied to a valid reading here so every
+// downstream consumer (control, MQTT, web) sees the corrected value; a NAN
+// (fault) is never shifted.
+static void commit(float reading, float offset, float *out, uint8_t *miss) {
     if (!isnan(reading)) {
-        *out = reading;
+        *out = reading + offset;
         *miss = 0;
     } else if (*miss < MISS_LIMIT) {
         (*miss)++;             // hold last good value this cycle
@@ -167,12 +170,12 @@ static void temp_task(void *arg) {
 
         {
             StateGuard lock;
-            commit(tu, &g.temp_upper,      &miss_u);
-            commit(tl, &g.temp_lower,      &miss_l);
-            commit(tc, &g.temp_compressor, &miss_c);
+            commit(tu, g.off_upper,      &g.temp_upper,      &miss_u);
+            commit(tl, g.off_lower,      &g.temp_lower,      &miss_l);
+            commit(tc, g.off_compressor, &g.temp_compressor, &miss_c);
             if (ambient_cycle) {
-                commit(ta, &g.temp_ambient, &miss_a);
-                commit(tf, &g.temp_freezer, &miss_f);
+                commit(ta, g.off_ambient, &g.temp_ambient, &miss_a);
+                commit(tf, g.off_freezer, &g.temp_freezer, &miss_f);
             }
         }
 

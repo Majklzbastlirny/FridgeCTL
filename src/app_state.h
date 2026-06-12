@@ -115,6 +115,16 @@ struct AppState {
     float    freezer_cold_thr = -28.0f;
     float    freezer_crit_thr = 0.0f;
 
+    // ---- Per-sensor temperature calibration offsets (°C, persist) ----
+    // Added to each raw DS18B20 reading before publishing. Default 0 = no
+    // correction. Estimated from a stabilised all-at-ambient soak (no truth
+    // sensor, so offsets are relative to the group mean). See MANUAL.
+    float    off_upper        = 0.0f;
+    float    off_lower        = 0.0f;
+    float    off_compressor   = 0.0f;
+    float    off_ambient      = 0.0f;
+    float    off_freezer      = 0.0f;
+
     // ---- HA-settable switches (persist where noted) ----
     bool     system_enable    = true;    // persist (default ON)
     bool     door_override    = false;   // persist (default OFF)
