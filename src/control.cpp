@@ -217,6 +217,22 @@ static void control_tick(void) {
                 ESP_LOGI(TAG, "Freezer food safety cleared");
             }
         }
+    } else {
+        // Probe enabled but reading invalid (unplugged, cut, or faulty).
+        // DISARM the pending timers. They measure how long the freezer has been
+        // *continuously* out of range, and time spent with no sensor at all is
+        // not evidence of anything. Leaving them armed means a probe that is
+        // away for longer than the latch window would trip the instant it comes
+        // back, on a single out-of-range sample: reconnect a warm probe after a
+        // 2 h rewire and you would latch FREEZER FOOD SAFETY immediately,
+        // having never actually observed 2 h of warm freezer.
+        //
+        // Existing latches are deliberately NOT cleared here - they record that
+        // the condition really did occur, and the hysteresis branches above
+        // clear them once the probe is back and reading normally.
+        if (g.freezer_warm_ms || g.freezer_cold_ms || g.freezer_unsafe_ms)
+            ESP_LOGW(TAG, "Freezer probe invalid - disarming alarm timers");
+        g.freezer_warm_ms = g.freezer_cold_ms = g.freezer_unsafe_ms = 0;
     }
 
     // ---- Defrost management ----
@@ -595,6 +611,14 @@ std::string ctl_alarm_state(void) {
     if (!tc_ok) return "COMP TEMP SENSOR FAULT";
     if (!ct_ok) return "CT SENSOR FAULT";
     if (g.intermittent_zeros >= CAP_FAULT_COUNT) return "POSSIBLE CAP FAULT";
+    // No freezer data at all: report that, rather than a stale warm/cold latch
+    // left over from before the probe went away. (Ranked below FREEZER FOOD
+    // SAFETY above: that latch means it genuinely did get unsafe, which still
+    // matters even once the probe is gone.)
+    float tf = g.temp_freezer;
+    if (g.freezer_sensor_enable &&
+        (isnan(tf) || tf < TEMP_FREEZER_MIN_C || tf > TEMP_FREEZER_MAX_C))
+        return "FREEZER SENSOR FAULT";
     if (g.freezer_warm_latched) return "FREEZER TOO WARM";
     if (g.freezer_cold_latched) return "FREEZER TOO COLD";
 
