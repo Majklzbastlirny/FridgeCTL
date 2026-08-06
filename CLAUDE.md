@@ -32,8 +32,9 @@ pio run                 # build (first build downloads toolchain, ~slow; after t
 pio run -t upload       # flash over USB
 pio device monitor      # serial @ 115200
 ```
-- Build is **verified passing**: Flash 57.1% (~898 KB of 1.5 MB app slot),
-  RAM 13.2%. Two OTA app slots (`partitions.csv`), 4 MB flash. Device runs at
+- Build is **verified passing**: Flash 57.9% (~890 KB of 1.5 MB app slot),
+  RAM 20.3% (66.6 KB — the jump from 13.2% is the 19 KB log ring in
+  `logbuf.cpp`). Two OTA app slots (`partitions.csv`), 4 MB flash. Device runs at
   `192.168.1.4` (DHCP) and has been flashed + OTA-tested on real hardware.
 - **OTA after first USB flash**: use the web UI (below) — browse to
   `http://<device-ip>/control` (Basic auth) → Firmware section → upload
@@ -41,6 +42,21 @@ pio device monitor      # serial @ 115200
   `curl.exe -u admin:PASS --data-binary "@.pio/build/fridgectl/firmware.bin" http://<ip>/update`
   NOTE: in PowerShell `curl` is an alias for `Invoke-WebRequest`; use **`curl.exe`**
   and quote the `@file`. Relays are forced off before flashing; board reboots.
+- **⚠️ Rollback can silently disappear on an IDF upgrade — check it after one.**
+  On 2026-08-06 the platform auto-resolved to Espressif 32 55.3.39 / IDF 5.5.4
+  and the regenerated `sdkconfig.fridgectl` silently dropped
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` — every *other* line of
+  `sdkconfig.defaults` still applied, only this one was lost. Symptom: the boot
+  log reads `web: image already valid, no rollback check needed` **after an
+  OTA** (it is correct and expected after a USB flash). Re-enabled directly in
+  `sdkconfig.fridgectl`; since rollback lives in the **bootloader** and OTA only
+  replaces the app partition, it needed a one-time USB flash to take effect.
+  ✅ **Re-armed and verified end-to-end 2026-08-06** — USB-flashed the new
+  bootloader, then OTA'd and observed the full chain in the log:
+  `image PENDING_VERIFY - running health check before commit` (1.1 s) →
+  `health check PASSED - control loop alive, image committed` (38.2 s, i.e.
+  `boot_done` at ~32 s plus two 5 s control beats). Quick check after any
+  toolchain bump: `grep BOOTLOADER_APP_ROLLBACK_ENABLE sdkconfig.fridgectl`.
 - **OTA rollback (safety net).** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. An
   OTA'd image boots in `PENDING_VERIFY`; `ota_health_check_start()` (task in
   ota.cpp) commits it with `esp_ota_mark_app_valid_cancel_rollback()` once the
@@ -52,8 +68,22 @@ pio device monitor      # serial @ 115200
   run fully offline, so a router/broker outage must never roll back a good image.
   (Earlier versions wrongly required wifi_connected — fixed.) `control_beats`
   also increments in the system-disabled branch so OTA-while-off still passes.
-  USB flash is already valid → check is a no-op. Two OTA slots + fallback AP =
-  can't brick. Rollback costs ~0 flash (reuses existing `otadata`).
+  USB flash is already valid → check is a no-op. Rollback costs ~0 flash
+  (reuses existing `otadata`).
+  **Two OTA slots are NOT the same as rollback** — the slots are storage, the
+  rollback is policy, and they are independently configured:
+  - The bootloader *always* falls back to the other slot if the selected image
+    fails integrity verification (`try_load_partition()` in
+    `bootloader_utility.c`). A truncated/corrupted upload is covered regardless
+    of Kconfig.
+  - **Only** `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` covers an image that
+    verifies fine but is broken at runtime (panic loop, hang, dead control
+    loop). Without it `esp_ota_set_boot_partition()` writes ota_state
+    `ESP_OTA_IMG_UNDEFINED` (see `set_new_state_otadata()`, esp_ota_ops.c) and
+    the bootloader boots that slot forever.
+  In that second case a boot-looping app never reaches the fallback AP or the
+  web UI, so **recovery is USB-only**. Don't repeat "two slots + fallback AP =
+  can't brick" — it was overstated.
 
 ## Web UI (two-stage, served by ota.cpp)
 
@@ -63,16 +93,35 @@ The HTTP server exposes a 2-stage interface (entity data comes from the same
   every 3 s; shows all sensors, all binary status flags, and text/system info.
 - `GET /api/state`  — full state as JSON, no password (read-only data).
 - `GET /control`    — **full control surface + OTA**, Basic-Auth. All switches,
-  all numbers (setpoints/config), action buttons, firmware upload.
+  all numbers (setpoints/config), action buttons, 1-Wire sensor browser, live
+  log tail, firmware upload.
 - `POST /api/cmd`   — control commands (Basic-Auth); JSON `{type,obj,val}` where
-  type ∈ switch|number|button. Tiny purpose-built JSON parser (`json_field`).
+  type ∈ switch|number|button|rom. Tiny purpose-built JSON parser (`json_field`).
+- `GET /api/onewire`— 1-Wire bus inventory as JSON (Basic-Auth).
+- `GET /api/logs?since=N` — raw log tail, `text/plain`, **chunked** (Basic-Auth).
 - `POST /update`    — firmware image (Basic-Auth).
 Same `OTA_USERNAME`/`OTA_PASSWORD` from secrets.h gate all protected routes.
+`max_uri_handlers` is 10 (7 in use). The control page's three generic sections
+are re-rendered wholesale by `load()` every 5 s, so the 1-Wire and log panels
+live in **their own containers with their own polls** — otherwise the re-render
+would eat a click target mid-interaction.
 
 ## Environment gotchas (important for tooling)
 
 - Windows 11, PowerShell default shell. There are **two PlatformIO cores**
   installed (6.1.15 and 6.1.19) — harmless warning, ignore it. `pio` works.
+- **Run `pio` from PowerShell, never from the Bash/MSys tool.** ESP-IDF's
+  `idf_tools.py` hard-refuses there ("MSys/Mingw is not supported") and the
+  build dies before compiling anything.
+- **`build_dir` must be short (2026-08).** With the current platform
+  (Espressif 32 55.3.39 / IDF 5.5.4) the default
+  `C:\Users\Michal\Documents\FridgeCTL\.pio\build\fridgectl\…` overflows the
+  Windows 8191-char command-line limit while generating `sections.ld`:
+  *"The command line is too long."* — after every source has already compiled
+  fine, so it looks like a code failure but isn't. Build with
+  `$env:PLATFORMIO_BUILD_DIR = "C:\pb\fc"; pio run`; the image lands in
+  `C:\pb\fc\fridgectl\firmware.bin`. (Kept out of `platformio.ini` on purpose —
+  it's a machine-specific absolute path and this repo is public.)
 - `pio pkg list` / `pio platform list` **crash with UnicodeEncodeError** (cp1250
   console). Avoid them; use `pio run` directly.
 - **Run builds in background** (`run_in_background: true`) writing to a log
@@ -96,7 +145,9 @@ src/
   app_state.{h,cpp}   single shared AppState struct g + recursive mutex; millis()
   nvs_store.{h,cpp}   persistence; deferred commit every 5 min (flash wear)
   ow.{h,cpp}          bit-banged 1-Wire + DS18B20 (own driver, no RMT components)
-  sensors.{h,cpp}     temp_task (DS18B20) + ct_task (ADC RMS + inrush)
+                      incl. ow_search() = Maxim SEARCH ROM 0xF0
+  sensors.{h,cpp}     temp_task (DS18B20 + bus scan) + ct_task (ADC RMS + inrush)
+  logbuf.{h,cpp}      esp_log_set_vprintf hook -> 120-line RAM ring for /api/logs
   gpio_io.{h,cpp}     relays / LEDs / light PWM / input_task (door + button)
   control.{h,cpp}     the 5 s control loop + derived telemetry + button handlers
   leds.{h,cpp}        500 ms LED/UI loop + status LED
@@ -325,6 +376,99 @@ all setpoints/config numbers, system_enable/door_override/vacation switches.
   Note: bumped the web `/api/state` JSON buffer in `ota.cpp` 6144→8192 to keep
   headroom after adding 5 entities (silent snprintf truncation would corrupt the
   whole control page).
+
+- **1-Wire sensor browser + runtime freezer/ambient ROM assignment.** The shared
+  GPIO33 bus used to be opaque: `ADDR_AMBIENT`/`ADDR_FREEZER` were compile-time
+  constants and swapping probes meant edit-recompile-reflash. Now:
+  `ow_search()` (ow.cpp) implements **Maxim SEARCH ROM 0xF0** on top of the
+  existing private `ow_read_bit`/`ow_write_bit`, accumulating `rom |= 1ULL<<bit`
+  — which is exactly the LSB-first/family-code-low encoding `read_addr_once`
+  puts on the wire and that the `config.h` literals use, so **no byte swapping
+  anywhere**. Results are CRC-checked and filtered to family `0x28`.
+  `temp_task` owns the scan (`do_scan()` in sensors.cpp) — the bit-banged bus
+  has **no task-level mutex** (`s_ow_mux` is a per-slot interrupt lock only), so
+  the HTTP handler must never touch it; it only raises `s_scan_req`. The 30 s
+  tail delay is waited in 1 s slices so a web-triggered rescan starts in ≤1 s.
+  Roles are `g.addr_ambient`/`g.addr_freezer` (`uint64_t`, **0 = use the
+  config.h default**, which keeps the known-good values as the fallback and
+  avoids pulling config.h into app_state.h); persisted as NVS `addr_amb`/
+  `addr_frz`. Assignment goes through `type:"rom"` in `cmd_post` → `assign_rom()`,
+  which **rejects any ROM the last scan didn't see on the shared bus** and, when
+  you claim the probe the other role owns, hands that role yours — so a swap is
+  one click. It calls `nvs_store_save()` **directly** (not `mark_dirty`): the
+  deferred committer is 5 min and a reboot must not lose a deliberate change.
+  `sensors_roles_changed()` then clears the `miss_a`/`miss_f` debounce so
+  `commit()` can't keep publishing a held value belonging to the *other* probe.
+  Calibration offsets deliberately stay with the **role**, not the probe.
+  Exposed as `GET /api/onewire` + a control-page section, plus an `ow_scan`
+  entry in `BUTTONS[]` (so HA gets a "Scan 1-Wire Buses" button for free).
+  `temp` task stack 4096→5120 (the scan builds an `OwFound[]` snapshot on it).
+- **Raw log viewer (`logbuf.{h,cpp}` + `GET /api/logs`).** `logbuf_init()` is the
+  **first statement in `app_main`** (before the boot banner, before
+  `state_init_mutex()`) and installs an `esp_log_set_vprintf()` hook that chains
+  to the previous handler — **serial output is unchanged**. 120 × 160 B static
+  ring (~19 KB DRAM; static on purpose so it doesn't eat the heap headroom WiFi
+  and OTA need). The hook runs on whatever task logged (and IDF keeps the log
+  path in IRAM, so possibly ISR context): it formats on the **caller's stack
+  outside any lock** and takes a dedicated `portMUX_TYPE` spinlock only for the
+  ≤160 B copy. It must **never** take `StateGuard` — `state_lock()` waits
+  forever and would invert priority against the WDT-subscribed control task.
+  **One vprintf call ≠ one log line**: the WiFi blob emits its header and body
+  as two separate calls (serial shows them on one line). So the hook accumulates
+  into `s_pend` and only commits a ring entry on `'\n'`, reproducing the serial
+  console exactly. (First version split them; fixed and verified on hardware —
+  `I (603) wifi:wifi driver task: …` now arrives as a single line.)
+  `/api/logs?since=N` streams via `httpd_resp_send_chunk` (the codebase's first
+  chunked responder) and ends with a `#seq N` **trailer** — written last so
+  lines arriving mid-response aren't skipped. Auth-gated: log lines carry SSID/
+  IP/OTA detail. Timestamps are IDF's own `(ms)` prefix
+  (`CONFIG_LOG_TIMESTAMP_SOURCE_RTOS`); `CONFIG_LOG_COLORS` is off so lines are
+  clean ASCII. Note `CONFIG_LOG_MAXIMUM_LEVEL=3` compiles DEBUG out — bump
+  `CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y` if more verbosity is ever wanted.
+  Browser Copy uses a `<textarea>` + `execCommand` fallback because plain
+  `http://` is not a secure context, so `navigator.clipboard` is undefined there.
+
+- **Freezer alarm timers disarm when the probe is invalid (2026-08-06 fix).**
+  All freezer arming/latching/clearing lived inside the `else if (valid
+  reading)` branch of `control_tick`, so an invalid probe froze the whole block
+  — including the arming timestamps `freezer_warm_ms` / `freezer_cold_ms` /
+  `freezer_unsafe_ms`, which hold absolute `millis()` values. The consequence
+  was **a false latch on reconnect**: pull the probe with a timer already armed,
+  leave it out longer than the latch window, plug it back in, and the very first
+  out-of-range sample satisfies `now - freezer_*_ms > THRESHOLD` and latches
+  instantly — having never observed the sustained condition the latch is
+  supposed to prove. With `FREEZER_UNSAFE_MS` = 2 h, a 2-hour rewire followed by
+  one warm reading would latch **FREEZER FOOD SAFETY** on no evidence at all.
+  Fixed with a new `else` branch that zeroes the three timers whenever the probe
+  is enabled but unreadable, so a returning probe must re-accumulate the full
+  duration. Existing latches are deliberately **not** cleared there — they
+  record that the condition really happened, and the hysteresis branches already
+  clear them once the probe reads normally again.
+  `ctl_alarm_state()` also now returns **`FREEZER SENSOR FAULT`** (ranked just
+  above the warm/cold latches, but *below* `FREEZER FOOD SAFETY`) so a missing
+  probe reads honestly instead of showing a stale "FREEZER TOO WARM".
+  Note the `freezer_sensor` switch OFF branch still takes priority and clears
+  everything, so the switch remains the clean way to park a removed probe.
+
+## Hardware-verified (2026-08-06, device at 192.168.1.4)
+
+Both new features were OTA-flashed and exercised on the real fridge:
+- `1-Wire scan: 5 device(s) found across 4 buses`. The two shared-bus ROMs read
+  back as `BD0623C34C9E4A28` / `4E00001096F82428` — **character-identical to
+  `config.h`**, proving the SEARCH ROM bit encoding needs no byte swapping.
+  Newly visible: upper `940000109875B728`, lower `C500001098394228`,
+  compressor `F16FE700879C5128`.
+- One-click ambient↔freezer swap works, the published temperatures crossed over
+  on the next ambient cycle, and — importantly — both went **unavailable first**
+  rather than holding a stale value, which is `sensors_roles_changed()` clearing
+  the `miss_a`/`miss_f` debounce as intended. The swap **survived a reboot**
+  (direct `nvs_store_save()`), then was restored to the config.h mapping.
+- Rejections behave: a ROM from a dedicated bus, an unknown ROM, and a bad role
+  name are all refused with a message.
+- Log tail matches serial; `?since=` incremental fetch returned 66 bytes vs 3328
+  for the full dump.
+- Post-flash: alarm `OK`, no active fault flags, `TASK:0` still (no Task-WDT
+  resets). `SW` count rose only by the reboots deliberately triggered here.
 
 ## Status & next steps (as of 2026-06)
 

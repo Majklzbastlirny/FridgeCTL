@@ -27,6 +27,9 @@ static void get_bool(nvs_handle_t h, const char *k, bool *v) {
     uint8_t t = *v ? 1 : 0;
     if (nvs_get_u8(h, k, &t) == ESP_OK) *v = (t != 0);
 }
+static void get_u64(nvs_handle_t h, const char *k, uint64_t *v) {
+    nvs_get_u64(h, k, v);
+}
 static void get_f(nvs_handle_t h, const char *k, float *v) {
     size_t sz = sizeof(float);
     nvs_get_blob(h, k, v, &sz);
@@ -79,6 +82,9 @@ void nvs_store_load(void) {
     get_f(h, "off_comp",    &g.off_compressor);
     get_f(h, "off_amb",     &g.off_ambient);
     get_f(h, "off_frz",     &g.off_freezer);
+    // 1-Wire role assignment on the shared bus (0 = config.h default)
+    get_u64(h, "addr_amb", &g.addr_ambient);
+    get_u64(h, "addr_frz", &g.addr_freezer);
     // Switches
     get_bool(h, "sys_en",   &g.system_enable);
     get_bool(h, "door_ovr", &g.door_override);
@@ -120,6 +126,8 @@ void nvs_store_save(void) {
         set_f(h, "off_comp",    g.off_compressor);
         set_f(h, "off_amb",     g.off_ambient);
         set_f(h, "off_frz",     g.off_freezer);
+        nvs_set_u64(h, "addr_amb", g.addr_ambient);
+        nvs_set_u64(h, "addr_frz", g.addr_freezer);
         nvs_set_u8(h, "sys_en",   g.system_enable ? 1 : 0);
         nvs_set_u8(h, "door_ovr", g.door_override ? 1 : 0);
         nvs_set_u8(h, "vac_mode", g.vacation_mode ? 1 : 0);

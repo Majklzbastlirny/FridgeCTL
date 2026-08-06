@@ -41,16 +41,31 @@ src/
   config.h            pins, thresholds, CT calibration  ← tune here
   app_state.*         shared state struct + mutex
   nvs_store.*         persistence
-  ow.*                bit-banged 1-Wire + DS18B20 driver
-  sensors.*           DS18B20 tasks + CT/ADC RMS
+  ow.*                bit-banged 1-Wire + DS18B20 driver (incl. ROM search)
+  sensors.*           DS18B20 tasks + CT/ADC RMS + 1-Wire bus scan
+  logbuf.*            in-RAM log ring behind /api/logs
   gpio_io.*           relays / LEDs / light PWM / door+button task
   control.*           the 5 s control loop + derived telemetry
   leds.*              500 ms LED/UI loop
   wifi_net.*          STA + always-on fallback AP
   mqtt_net.*          esp-mqtt + HA Discovery + command routing
-  ota.*               HTTP firmware-upload endpoint
+  ota.*               web UI + HTTP firmware-upload endpoint
   main.cpp            init + task creation
 ```
+
+## Web UI
+
+- `http://<device-ip>/` — read-only dashboard, no password.
+- `http://<device-ip>/control` — full control surface (Basic-Auth). Switches,
+  setpoints, actions, firmware upload, plus:
+  - **1-Wire sensors** — every DS18B20 found on every bus, with its ROM code
+    and live temperature. *Rescan* re-enumerates the buses. On the shared
+    ambient bus each probe gets **Ambient** / **Freezer** buttons that assign
+    the role to that ROM (persisted immediately to NVS); claiming the probe
+    the other role owns swaps the two in one click. Calibration offsets stay
+    with the *role*, not the probe — re-check them after reassigning.
+  - **Logs** — live tail of the same output you'd see on the serial monitor,
+    timestamps included, with a Copy button. Serial output is unaffected.
 
 ## First build & flash
 
@@ -77,7 +92,16 @@ After the first USB flash the device serves an upload page:
   ```
 
 Relays are forced off before flashing; the board reboots into the new image
-on success. Two OTA slots mean a bad upload won't brick the device.
+on success.
+
+Two OTA slots mean a **corrupted or truncated upload** won't brick the device:
+the bootloader verifies the image and falls back to the other slot on its own.
+That is *not* the same as rollback — an image that verifies but is broken at
+runtime (panic loop, hang) would be booted forever. Guarding against that needs
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, which puts a freshly-OTA'd image in
+`PENDING_VERIFY` until the firmware proves its control loop is alive. Because
+that logic lives in the **bootloader**, and OTA replaces only the app partition,
+enabling it requires one USB flash (`pio run -t upload`) to take effect.
 
 ## Home Assistant
 
@@ -96,8 +120,10 @@ under one `FridgeCTL` device. Availability uses an LWT on
   the original ESPHome `calibrate_linear` points. `CT_NOISE_FLOOR_A` (0.30 A)
   zeroes idle noise.
 - **DS18B20 addresses**: the ambient bus (GPIO33) carries two sensors,
-  matched by ROM code `ADDR_AMBIENT` / `ADDR_FREEZER`. If one reads as
-  unavailable, check the boot log and update these.
+  matched by ROM code `ADDR_AMBIENT` / `ADDR_FREEZER`. These are only the
+  *defaults* — the **1-Wire sensors** section of the web control page lists
+  every probe found on every bus and lets you reassign which ROM is ambient
+  and which is freezer at runtime (see below). No rebuild needed.
 - **Per-sensor temperature offsets**: each probe has a runtime-settable trim
   (−5…+5 °C, default 0) exposed as a *Temp Offset* number in Home Assistant and
   the web control page — no rebuild needed. Added to the raw reading before it's

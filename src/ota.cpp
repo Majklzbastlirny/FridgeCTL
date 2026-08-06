@@ -5,6 +5,9 @@
 #include "gpio_io.h"
 #include "mqtt_net.h"
 #include "diag.h"
+#include "sensors.h"
+#include "nvs_store.h"
+#include "logbuf.h"
 
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
@@ -14,6 +17,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 static const char *TAG = "web";
 static char s_expected_auth[128];
@@ -24,6 +28,8 @@ static char s_expected_auth[128];
 //    /api/state   JSON state (no password) — polled by both pages
 //    /control     control surface + OTA   (Basic-Auth)
 //    /api/cmd     POST control commands    (Basic-Auth)
+//    /api/onewire GET  1-Wire bus inventory (Basic-Auth)
+//    /api/logs    GET  raw log tail        (Basic-Auth)
 //    /update      POST firmware image      (Basic-Auth)
 // ================================================================
 
@@ -81,12 +87,30 @@ static const char *PAGE_CTRL =
 "input{width:90px;background:#222;color:#fff;border:1px solid #444;border-radius:6px;padding:6px}"
 "#ota{margin:12px 16px;padding:12px;background:#171a21;border-radius:8px}"
 "#s{padding:0 16px;color:#9aa;font-size:.85rem}"
+"button.mini{font-size:.72rem;padding:4px 8px;background:#456;margin-left:6px}"
+".note{padding:4px 16px;color:#778;font-size:.75rem}"
+".owb{padding:10px 16px 2px;color:#9aa;font-size:.78rem}"
+".ow{padding:6px 16px;border-bottom:1px solid #222;font-size:.85rem}"
+".rom{font-family:ui-monospace,Consolas,monospace;font-size:.8rem;color:#cde}"
+".badge{font-size:.68rem;background:#345;padding:2px 6px;border-radius:4px;margin-left:8px}"
+".badge.a{background:#2a6}.badge.f{background:#36c}"
+"#log{background:#0b0d11;font:11px/1.45 ui-monospace,Consolas,monospace;"
+"padding:8px 12px;margin:0 16px 16px;height:340px;overflow:auto;white-space:pre-wrap;border-radius:8px}"
+"#log .w{color:#e84}#log .e{color:#f66}"
 "</style></head><body>"
 "<h1>FridgeCTL Controls <a class=btn href=/>&larr; View</a></h1>"
 "<div id=s>loading&hellip;</div>"
 "<div class=sec>Switches</div><div id=switches></div>"
 "<div class=sec>Setpoints &amp; config</div><div id=numbers></div>"
 "<div class=sec>Actions</div><div id=buttons></div>"
+"<div class=sec>1-Wire sensors <button class=mini onclick=owscan()>Rescan</button></div>"
+"<div id=ow></div>"
+"<div class=note>Calibration offsets follow the role, not the probe &mdash; re-check them after reassigning.</div>"
+"<div class=sec>Logs <button class=mini onclick=lcopy()>Copy</button>"
+"<button class=mini onclick=lclear()>Clear</button>"
+"<label style='margin-left:10px;text-transform:none'><input type=checkbox id=lf checked> follow</label>"
+"<span id=lstat></span></div>"
+"<pre id=log></pre>"
 "<div class=sec>Firmware</div>"
 "<div id=ota><input type=file id=f accept='.bin'> <button onclick=up()>Upload &amp; reboot</button>"
 "<div id=ostat></div></div>"
@@ -117,6 +141,65 @@ static const char *PAGE_CTRL =
 "x.onload=function(){o.textContent=x.responseText;if(x.responseText.indexOf('received')>=0)reboot(o);};"
 "x.onerror=function(){o.textContent='error: upload failed';};x.send(f);}"
 "load();setInterval(load,5000);"
+// ---- 1-Wire inventory. Own container + own poll: load() replaces the
+// switches/numbers/buttons markup wholesale and would eat a click target.
+// Buttons carry data- attributes and a single delegated handler, so no
+// quoting gymnastics inside generated onclick strings.
+"let owprev='';"
+"async function owload(){try{"
+"let t=await(await fetch('/api/onewire')).text();"
+"if(t==owprev)return;owprev=t;let d=JSON.parse(t);"
+"let h=d.scanning?'<div class=note>scanning\\u2026</div>':'';"
+"for(let b of d.buses){"
+"h+='<div class=owb>'+b.n+' (GPIO'+b.gpio+') \\u2014 '+(d.scanned?b.dev.length+' device(s)':'not scanned yet')+'</div>';"
+"for(let x of b.dev){"
+"h+='<div class=ow><span class=rom>'+x.rom+'</span> '+(x.t===null?'&mdash;':x.t.toFixed(2)+' \\u00b0C');"
+"if(x.role)h+='<span class=\"badge '+(x.role=='ambient'?'a':x.role=='freezer'?'f':'')+'\">'+x.role+'</span>';"
+"if(!b.fixed)h+='<span style=float:right><button class=mini data-rom='+x.rom+' data-role=ambient>Ambient</button>'"
+"+'<button class=mini data-rom='+x.rom+' data-role=freezer>Freezer</button></span>';"
+"h+='</div>';}"
+"if(d.scanned&&!b.dev.length)h+='<div class=ow style=color:#e84>no devices responded</div>';}"
+"document.getElementById('ow').innerHTML=h;}catch(e){}}"
+"document.getElementById('ow').onclick=async function(e){"
+"let t=e.target;if(!t.dataset||!t.dataset.role)return;"
+"if(!confirm('Set '+t.dataset.rom+' as '+t.dataset.role+'?'))return;"
+"let r=await fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},"
+"body:JSON.stringify({type:'rom',obj:t.dataset.role,val:t.dataset.rom})});"
+"let m=await r.text();if(m!='ok')alert(m);owprev='';owload();};"
+"function owscan(){owprev='';post({type:'button',obj:'ow_scan'});"
+"setTimeout(owload,1500);setTimeout(owload,3500);}"
+"owload();setInterval(owload,5000);"
+// ---- Raw log tail. ?since= means each poll carries only new lines, so the
+// 2 s cadence costs almost nothing. New lines are appended as nodes rather
+// than re-rendering, and auto-scroll backs off while you read scrolled up.
+"let lseq=0,llines=[];"
+"async function lload(){try{"
+"let t=await(await fetch('/api/logs?since='+lseq)).text();"
+"let el=document.getElementById('log');"
+"let atB=el.scrollHeight-el.scrollTop-el.clientHeight<40;let add=0;"
+"for(let ln of t.split('\\n')){"
+"if(ln.indexOf('#seq ')==0){lseq=parseInt(ln.slice(5))||lseq;continue;}"
+"if(!ln)continue;llines.push(ln);"
+"let s=document.createElement('span');"
+"s.className=ln[0]=='W'?'w':ln[0]=='E'?'e':'';"
+"s.textContent=ln+'\\n';el.appendChild(s);add++;}"
+"if(!add)return;"
+"while(llines.length>2000)llines.shift();"
+"while(el.childNodes.length>2000)el.removeChild(el.firstChild);"
+"if(document.getElementById('lf').checked||atB)el.scrollTop=el.scrollHeight;"
+"}catch(e){}}"
+"function lclear(){llines=[];document.getElementById('log').innerHTML='';}"
+// Plain http:// is not a secure context, so navigator.clipboard is usually
+// undefined here — the textarea + execCommand path is the one that fires.
+"function lcopy(){let s=document.getElementById('lstat');let txt=llines.join('\\n');"
+"let ok=function(){s.textContent=' copied';setTimeout(function(){s.textContent='';},1500);};"
+"if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(txt).then(ok);return;}"
+"let ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.opacity=0;"
+"document.body.appendChild(ta);ta.select();"
+"try{if(document.execCommand('copy'))ok();else s.textContent=' copy failed';}"
+"catch(e){s.textContent=' copy failed';}"
+"document.body.removeChild(ta);}"
+"lload();setInterval(lload,2000);"
 "</script></body></html>";
 
 // ---- Basic-Auth ------------------------------------------------
@@ -175,29 +258,173 @@ static bool json_field(const char *body, const char *key, char *out, size_t n) {
     return true;
 }
 
+// Point one of the two shared-bus roles at a specific ROM. Returns nullptr on
+// success, else a short message for the user.
+static const char *assign_rom(const char *role, const char *hex) {
+    bool is_amb = strcmp(role, "ambient") == 0;
+    if (!is_amb && strcmp(role, "freezer") != 0) return "unknown role";
+
+    uint64_t rom = strtoull(hex, nullptr, 16);
+    if (rom == 0) return "bad ROM code";
+
+    // Only accept a device the last scan actually saw on the shared bus, so a
+    // stale page or a typo can never point a role at nothing.
+    OwFound found[OW_SCAN_MAX];
+    int n = sensors_scan_results(found, OW_SCAN_MAX, nullptr);
+    bool on_shared = false;
+    for (int i = 0; i < n; i++) {
+        const OwBusInfo *bi = sensors_bus_info(found[i].bus);
+        if (found[i].rom == rom && bi && bi->fixed_role[0] == 0) on_shared = true;
+    }
+    if (!on_shared) return "that ROM is not on the shared bus - rescan first";
+
+    {
+        StateGuard l;
+        uint64_t cur_amb = g.addr_ambient ? g.addr_ambient : ADDR_AMBIENT;
+        uint64_t cur_frz = g.addr_freezer ? g.addr_freezer : ADDR_FREEZER;
+        // Claiming the probe the other role currently owns hands that role
+        // ours, so the two can be swapped in a single click.
+        if (is_amb) {
+            if (rom == cur_frz) g.addr_freezer = cur_amb;
+            g.addr_ambient = rom;
+        } else {
+            if (rom == cur_amb) g.addr_ambient = cur_frz;
+            g.addr_freezer = rom;
+        }
+    }
+    // Rare and deliberate, so commit right now instead of waiting up to five
+    // minutes for the deferred committer — a reboot must not lose this.
+    nvs_store_save();
+    sensors_roles_changed();
+    ESP_LOGW(TAG, "1-Wire role '%s' assigned to %s", role, hex);
+    return nullptr;
+}
+
 static esp_err_t cmd_post(httpd_req_t *req) {
     if (!check_auth(req)) return deny(req);
-    char body[160];
+    char body[224];
     int n = req->content_len < (int)sizeof(body) - 1 ? req->content_len : (int)sizeof(body) - 1;
     int got = httpd_req_recv(req, body, n);
     if (got <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
     body[got] = 0;
 
-    char type[12], obj[32], val[24];
+    char type[12], obj[32], val[32];
     if (!json_field(body, "type", type, sizeof(type)) ||
         !json_field(body, "obj",  obj,  sizeof(obj))) {
         httpd_resp_sendstr(req, "bad request"); return ESP_OK;
     }
     bool ok = false;
+    const char *err = "unknown command";
     if (strcmp(type, "switch") == 0 && json_field(body, "val", val, sizeof(val))) {
         ok = web_set_switch(obj, strcmp(val, "true") == 0 || strcmp(val, "1") == 0);
     } else if (strcmp(type, "number") == 0 && json_field(body, "val", val, sizeof(val))) {
         ok = web_set_number(obj, strtof(val, nullptr));
     } else if (strcmp(type, "button") == 0) {
         ok = web_press_button(obj);
+    } else if (strcmp(type, "rom") == 0 && json_field(body, "val", val, sizeof(val))) {
+        err = assign_rom(obj, val);          // obj = "ambient" | "freezer"
+        ok  = (err == nullptr);
     }
-    httpd_resp_sendstr(req, ok ? "ok" : "unknown command");
+    httpd_resp_sendstr(req, ok ? "ok" : err);
     return ESP_OK;
+}
+
+// ---- 1-Wire bus inventory --------------------------------------
+// MSB-first hex, so a ROM reads back character-for-character identical to the
+// ADDR_AMBIENT / ADDR_FREEZER literals in config.h (family code 0x28 is the
+// last two characters). Split into two 32-bit halves to stay clear of any
+// "ll" length-modifier trouble in the reduced newlib printf.
+static void rom_hex(char *out, uint64_t rom) {
+    sprintf(out, "%08lX%08lX", (unsigned long)(rom >> 32),
+                               (unsigned long)(rom & 0xFFFFFFFFUL));
+}
+
+static esp_err_t onewire_get(httpd_req_t *req) {
+    if (!check_auth(req)) return deny(req);
+
+    OwFound  found[OW_SCAN_MAX];
+    uint32_t age = 0;
+    int      n   = sensors_scan_results(found, OW_SCAN_MAX, &age);
+
+    uint64_t cur_amb, cur_frz;
+    {
+        StateGuard l;
+        cur_amb = g.addr_ambient ? g.addr_ambient : ADDR_AMBIENT;
+        cur_frz = g.addr_freezer ? g.addr_freezer : ADDR_FREEZER;
+    }
+
+    static char buf[1536];       // static: keep it off the HTTP task stack
+    int p = 0;
+    // Bounded append — never let the remaining size go negative (snprintf
+    // returns what it *would* have written, which would wrap size_t).
+    #define J(...) do { \
+        if (p < (int)sizeof(buf)) p += snprintf(buf + p, sizeof(buf) - p, __VA_ARGS__); \
+        if (p > (int)sizeof(buf)) p = (int)sizeof(buf); \
+    } while (0)
+
+    J("{\"scanning\":%s,\"scanned\":%s,\"age\":%lu,\"buses\":[",
+      sensors_scan_pending() ? "true" : "false",
+      sensors_scan_done()    ? "true" : "false",
+      (unsigned long)age);
+
+    for (int b = 0; b < OW_BUS_COUNT; b++) {
+        const OwBusInfo *bi = sensors_bus_info(b);
+        J("%s{\"n\":\"%s\",\"gpio\":%u,\"fixed\":\"%s\",\"dev\":[",
+          b ? "," : "", bi->name, (unsigned)bi->gpio, bi->fixed_role);
+        bool first = true;
+        for (int i = 0; i < n; i++) {
+            if (found[i].bus != b) continue;
+            char hex[17];
+            rom_hex(hex, found[i].rom);
+            const char *role = "";
+            if      (found[i].rom == cur_amb) role = "ambient";
+            else if (found[i].rom == cur_frz) role = "freezer";
+            else if (bi->fixed_role[0])       role = bi->fixed_role;
+            J("%s{\"rom\":\"%s\",\"role\":\"%s\",\"t\":", first ? "" : ",", hex, role);
+            if (isnan(found[i].temp)) J("null}");
+            else                      J("%.2f}", found[i].temp);
+            first = false;
+        }
+        J("]}");
+    }
+    J("]}");
+    #undef J
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, p);
+}
+
+// ---- Raw log tail ----------------------------------------------
+// Streamed in chunks so we don't need a second multi-KB static buffer beside
+// the /api/state one. `?since=N` makes each poll carry only what is new. The
+// trailing "#seq N" line tells the client what to ask for next time — it is
+// written last so lines that arrive mid-response are not skipped.
+// Auth-gated: log lines contain the SSID, IP and OTA detail.
+static esp_err_t logs_get(httpd_req_t *req) {
+    if (!check_auth(req)) return deny(req);
+
+    uint32_t since = 0;
+    char q[48];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        char v[16];
+        if (httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK)
+            since = (uint32_t)strtoul(v, nullptr, 10);
+    }
+
+    httpd_resp_set_type(req, "text/plain");
+
+    char     chunk[512];
+    uint32_t seq = since;
+    for (;;) {
+        uint32_t next = seq;
+        int len = logbuf_dump(chunk, sizeof(chunk), seq, &next);
+        if (len > 0) httpd_resp_send_chunk(req, chunk, len);
+        if (next == seq) break;          // caught up
+        seq = next;
+    }
+    int hdr = snprintf(chunk, sizeof(chunk), "#seq %lu\n", (unsigned long)seq);
+    httpd_resp_send_chunk(req, chunk, hdr);
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 // ---- OTA upload ------------------------------------------------
@@ -299,7 +526,7 @@ void ota_start(void) {
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 20;
     config.send_wait_timeout = 20;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
 
     httpd_handle_t server = nullptr;
     if (httpd_start(&server, &config) != ESP_OK) {
@@ -311,11 +538,15 @@ void ota_start(void) {
     httpd_uri_t u_ctrl  = { "/control",   HTTP_GET,  ctrl_get,   nullptr };
     httpd_uri_t u_cmd   = { "/api/cmd",   HTTP_POST, cmd_post,   nullptr };
     httpd_uri_t u_upd   = { "/update",    HTTP_POST, update_post, nullptr };
+    httpd_uri_t u_ow    = { "/api/onewire", HTTP_GET, onewire_get, nullptr };
+    httpd_uri_t u_log   = { "/api/logs",  HTTP_GET,  logs_get,   nullptr };
     httpd_register_uri_handler(server, &u_view);
     httpd_register_uri_handler(server, &u_state);
     httpd_register_uri_handler(server, &u_ctrl);
     httpd_register_uri_handler(server, &u_cmd);
     httpd_register_uri_handler(server, &u_upd);
+    httpd_register_uri_handler(server, &u_ow);
+    httpd_register_uri_handler(server, &u_log);
 
     ESP_LOGI(TAG, "web server ready: / (view), /control (auth), /update (auth)");
 }

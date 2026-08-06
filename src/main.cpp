@@ -16,6 +16,7 @@
 #include "mqtt_net.h"
 #include "ota.h"
 #include "diag.h"
+#include "logbuf.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -34,6 +35,7 @@ static void telemetry_task(void *arg) {
 }
 
 extern "C" void app_main(void) {
+    logbuf_init();         // capture logs from the first line on (/api/logs)
     ESP_LOGI(TAG, "FridgeCTL " FW_VERSION " booting");
 
     // ---- Core init (order matters) ----

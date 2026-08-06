@@ -143,12 +143,111 @@ static void commit(float reading, float offset, float *out, uint8_t *miss) {
     }
 }
 
+// ---- 1-Wire bus scan -------------------------------------------
+static const gpio_num_t OW_PINS[OW_BUS_COUNT] = {
+    PIN_OW_UPPER, PIN_OW_LOWER, PIN_OW_COMPRESSOR, PIN_OW_AMBIENT
+};
+static const OwBusInfo OW_BUSES[OW_BUS_COUNT] = {
+    { "Upper chamber", (uint8_t)PIN_OW_UPPER,      "upper"      },
+    { "Lower chamber", (uint8_t)PIN_OW_LOWER,      "lower"      },
+    { "Compressor",    (uint8_t)PIN_OW_COMPRESSOR, "compressor" },
+    { "Shared bus",    (uint8_t)PIN_OW_AMBIENT,    ""           },  // ambient + freezer
+};
+
+const OwBusInfo *sensors_bus_info(int bus) {
+    if (bus < 0 || bus >= OW_BUS_COUNT) return nullptr;
+    return &OW_BUSES[bus];
+}
+
+static volatile bool s_scan_req    = true;   // scan once on the very first cycle
+static volatile bool s_scanning    = false;
+static volatile bool s_roles_dirty = false;
+static OwFound       s_found[OW_SCAN_MAX];   // all four guarded by the state lock
+static int           s_found_n     = 0;
+static uint32_t      s_scan_ms     = 0;
+static bool          s_scan_done   = false;
+
+void sensors_request_scan(void)  { s_scan_req = true; }
+bool sensors_scan_pending(void)  { return s_scan_req || s_scanning; }
+bool sensors_scan_done(void)     { StateGuard lock; return s_scan_done; }
+void sensors_roles_changed(void) { s_roles_dirty = true; }
+
+int sensors_scan_results(OwFound *out, int max, uint32_t *age_ms) {
+    StateGuard lock;
+    int n = s_found_n < max ? s_found_n : max;
+    for (int i = 0; i < n; i++) out[i] = s_found[i];
+    if (age_ms) *age_ms = s_scan_done ? (uint32_t)(millis() - s_scan_ms) : 0;
+    return n;
+}
+
+// Enumerate every bus, then read each device found by its own ROM. Costs one
+// shared 750 ms conversion window (~1 s total). Runs only from temp_task:
+// the bit-banged bus has no task-level mutex, so the HTTP handler must never
+// touch it — it only raises s_scan_req.
+static void do_scan(void) {
+    OwFound found[OW_SCAN_MAX];
+    int n = 0;
+
+    for (int b = 0; b < OW_BUS_COUNT; b++) {
+        uint64_t roms[OW_MAX_DEVICES];
+        int cnt = ow_search(OW_PINS[b], roms, OW_MAX_DEVICES);
+        for (int i = 0; i < cnt && n < OW_SCAN_MAX; i++) {
+            found[n].bus  = (uint8_t)b;
+            found[n].rom  = roms[i];
+            found[n].temp = NAN;
+            n++;
+        }
+        ds18b20_convert_all(OW_PINS[b]);   // all buses convert in parallel
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(800));        // 12-bit conversion needs ~750 ms
+
+    for (int i = 0; i < n; i++)
+        found[i].temp = ds18b20_read_addr(OW_PINS[found[i].bus], found[i].rom);
+
+    {
+        StateGuard lock;
+        for (int i = 0; i < n; i++) s_found[i] = found[i];
+        s_found_n   = n;
+        s_scan_ms   = millis();
+        s_scan_done = true;
+    }
+    ESP_LOGI(TAG, "1-Wire scan: %d device(s) found across %d buses", n, OW_BUS_COUNT);
+}
+
 // ---- Temperature task ------------------------------------------
 static void temp_task(void *arg) {
     uint8_t cycle = 0;
     uint8_t miss_u = 0, miss_l = 0, miss_c = 0, miss_a = 0, miss_f = 0;
     for (;;) {
+        if (s_scan_req) {
+            s_scan_req = false;   // cleared first: a request raised *during*
+            s_scanning = true;    // the scan queues another one
+            do_scan();
+            s_scanning = false;
+        }
+
+        if (s_roles_dirty) {
+            // The ambient/freezer ROM assignment changed. Drop the debounce
+            // state so commit() can't keep publishing a held value that
+            // actually belongs to the other probe.
+            s_roles_dirty = false;
+            miss_a = miss_f = MISS_LIMIT;
+            StateGuard lock;
+            g.temp_ambient = NAN;
+            g.temp_freezer = NAN;
+        }
+
         bool ambient_cycle = (cycle % DS18B20_AMBIENT_DIV) == 0;
+
+        // Which ROM plays which role on the shared bus. 0 = never assigned,
+        // so fall back to the known-good compile-time default.
+        uint64_t rom_amb, rom_frz;
+        {
+            StateGuard lock;
+            rom_amb = g.addr_ambient ? g.addr_ambient : ADDR_AMBIENT;
+            rom_frz = g.addr_freezer ? g.addr_freezer : ADDR_FREEZER;
+        }
 
         // Kick off conversions on all buses simultaneously, then wait once.
         ds18b20_convert_all(PIN_OW_UPPER);
@@ -164,8 +263,8 @@ static void temp_task(void *arg) {
 
         float ta = NAN, tf = NAN;
         if (ambient_cycle) {
-            ta = ds18b20_read_addr(PIN_OW_AMBIENT, ADDR_AMBIENT);
-            tf = ds18b20_read_addr(PIN_OW_AMBIENT, ADDR_FREEZER);
+            ta = ds18b20_read_addr(PIN_OW_AMBIENT, rom_amb);
+            tf = ds18b20_read_addr(PIN_OW_AMBIENT, rom_frz);
         }
 
         {
@@ -180,13 +279,21 @@ static void temp_task(void *arg) {
         }
 
         cycle++;
-        // Total cadence ~30 s (already spent ~0.8 s converting).
-        vTaskDelay(pdMS_TO_TICKS(DS18B20_PERIOD_MS - 800));
+        // Total cadence ~30 s (already spent ~0.8 s converting). Waited in
+        // 1 s slices so a web-triggered rescan starts within ~1 s instead of
+        // sitting out the rest of the cycle.
+        for (uint32_t left = DS18B20_PERIOD_MS - 800; left > 0; ) {
+            uint32_t slice = left > 1000 ? 1000 : left;
+            vTaskDelay(pdMS_TO_TICKS(slice));
+            left -= slice;
+            if (s_scan_req) break;
+        }
     }
 }
 
 void sensors_temp_task_start(void) {
-    xTaskCreate(temp_task, "temp", 4096, nullptr, 4, nullptr);
+    // 5120: the scan builds an OwFound[OW_SCAN_MAX] snapshot on this stack.
+    xTaskCreate(temp_task, "temp", 5120, nullptr, 4, nullptr);
 }
 
 void sensors_ct_task_start(void) {

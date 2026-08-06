@@ -103,6 +103,62 @@ uint8_t ow_crc8(const uint8_t *data, int len) {
     return crc;
 }
 
+// ---- SEARCH ROM ----
+// Maxim's standard binary-tree search. At each of the 64 ROM bit positions
+// every participating device sends the bit and then its complement, both
+// wire-ANDed onto the bus:
+//     0/1 or 1/0  all remaining devices agree on this bit
+//     0/0         discrepancy - both values are present; take the 0 branch
+//                 now and remember the position so the next pass takes 1
+//     1/1         nobody answered (device dropped off / bus fault) - abort
+// The master then writes back the direction it chose, which deselects every
+// device that disagrees. One full pass therefore yields exactly one ROM, and
+// we repeat until no discrepancy is left pending.
+int ow_search(gpio_num_t pin, uint64_t *roms, int max) {
+    int      found            = 0;
+    int      last_discrepancy = 0;   // 1-based bit index; 0 = nothing pending
+    uint64_t rom_no           = 0;   // path taken on the previous pass
+
+    while (found < max) {
+        if (!ow_reset(pin)) return found;   // no presence pulse = empty bus
+        ow_write_byte(pin, 0xF0);           // SEARCH ROM
+
+        int discrepancy = 0;
+        for (int bit = 1; bit <= 64; bit++) {
+            int b  = ow_read_bit(pin);
+            int nb = ow_read_bit(pin);
+            if (b && nb) return found;      // 1/1 - no device responded
+
+            int dir;
+            if (b != nb) {
+                dir = b;                    // unambiguous
+            } else {
+                // Retrace the previous path up to the branch point, then
+                // take the other direction there, and 0 beyond it.
+                if      (bit <  last_discrepancy) dir = (int)((rom_no >> (bit - 1)) & 1);
+                else if (bit == last_discrepancy) dir = 1;
+                else                              dir = 0;
+                if (!dir) discrepancy = bit;
+            }
+
+            if (dir) rom_no |=  (1ULL << (bit - 1));
+            else     rom_no &= ~(1ULL << (bit - 1));
+            ow_write_bit(pin, dir);
+        }
+
+        // Accept only sane DS18B20s: family code 0x28 in the low byte, and
+        // the ROM CRC (high byte) checking out over the other seven. This is
+        // the same byte order ds18b20_read_addr() puts on the wire.
+        uint8_t b8[8];
+        for (int i = 0; i < 8; i++) b8[i] = (uint8_t)(rom_no >> (8 * i));
+        if (b8[0] == 0x28 && ow_crc8(b8, 7) == b8[7]) roms[found++] = rom_no;
+
+        last_discrepancy = discrepancy;
+        if (last_discrepancy == 0) break;   // whole tree walked
+    }
+    return found;
+}
+
 // ---- DS18B20 ----
 
 bool ds18b20_convert_all(gpio_num_t pin) {

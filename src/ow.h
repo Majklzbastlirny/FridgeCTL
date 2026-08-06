@@ -21,6 +21,18 @@ void    ow_write_byte(gpio_num_t pin, uint8_t b);
 uint8_t ow_read_byte(gpio_num_t pin);
 uint8_t ow_crc8(const uint8_t *data, int len);
 
+// Most a single bus is ever expected to carry here (the shared ambient bus
+// has two). Sized generously so a mis-wired bus still reports rather than
+// silently truncating.
+#define OW_MAX_DEVICES 8
+
+// Enumerate every device on the bus (Maxim SEARCH ROM, 0xF0). Fills roms[]
+// with CRC-valid 64-bit ROM codes in the same LSB-first encoding that
+// ds18b20_read_addr() expects, and returns how many were found (0 = empty
+// bus). Non-DS18B20 families are skipped. Blocking bit-banged I/O: call
+// only from the sensor task, never from the control loop or an HTTP handler.
+int ow_search(gpio_num_t pin, uint64_t *roms, int max);
+
 // ---- DS18B20 helpers ----
 // Trigger a conversion on every device on the bus (SKIP ROM + 0x44).
 // Caller must wait >= 750 ms before reading.

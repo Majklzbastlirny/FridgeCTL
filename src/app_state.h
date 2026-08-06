@@ -125,6 +125,14 @@ struct AppState {
     float    off_ambient      = 0.0f;
     float    off_freezer      = 0.0f;
 
+    // ---- 1-Wire ROM assignment, shared ambient bus (persist) ----
+    // Which physical DS18B20 on PIN_OW_AMBIENT plays which role. 0 means
+    // "use the compile-time default" (ADDR_AMBIENT / ADDR_FREEZER in
+    // config.h), so a fresh device behaves exactly as before. Resolved in
+    // sensors.cpp; settable from the web control page after a bus scan.
+    uint64_t addr_ambient     = 0;
+    uint64_t addr_freezer     = 0;
+
     // ---- HA-settable switches (persist where noted) ----
     bool     system_enable    = true;    // persist (default ON)
     bool     door_override    = false;   // persist (default OFF)

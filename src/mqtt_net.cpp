@@ -136,6 +136,8 @@ static void tg_reset(char *b, size_t n){
 // --- button actions ---
 static void btn_reset_oc(void){ ctl_reset_overcurrent(); }
 static void btn_defrost(void){ ctl_trigger_defrost(); }
+// Only raises a flag - the scan itself is blocking 1-Wire I/O and runs in temp_task.
+static void btn_ow_scan(void){ sensors_request_scan(); }
 static void btn_restart(void){ ESP_LOGW(TAG, "Restart requested via MQTT"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); }
 
 // ================================================================
@@ -219,6 +221,7 @@ static const NumberEnt NUMBERS[] = {
 static const ButtonEnt BUTTONS[] = {
   {"reset_overcurrent","Reset Overcurrent Fault","mdi:alert-remove",btn_reset_oc},
   {"trigger_defrost","Trigger Defrost","mdi:snowflake-melt",btn_defrost},
+  {"ow_scan","Scan 1-Wire Buses","mdi:magnify-scan",btn_ow_scan},
   {"restart","Restart","mdi:restart",btn_restart},
 };
 
