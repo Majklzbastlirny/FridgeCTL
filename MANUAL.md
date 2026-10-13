@@ -67,7 +67,7 @@ no phone or computer needed.
 |---|---|
 | **Short press** | Steps the target temperature: 2 °C → 4 °C → 6 °C → 8 °C → back to 2 °C. The panel LEDs briefly show the chosen level (see below). |
 | **Double press** | Toggles **Door Override** on/off (tells the system to ignore the door sensor — useful if the door switch is faulty). The light still works normally. |
-| **Long press (hold ~3 s)** | Toggles **Turbo** mode: 30 minutes of forced maximum cooling. The panel triple-flashes to confirm. |
+| **Long press (hold ~3 s)** | Toggles **Turbo** mode: 30 minutes of forced maximum cooling. The panel triple-flashes to confirm. Turbo still stops if the fridge gets far colder than the target (see `CHAMBER TOO COLD` under Alarm states). |
 | **Any press** | Silences an active alarm buzzer for 10 minutes. |
 
 ### Reading the panel temperature display
@@ -135,7 +135,7 @@ firmware updates.
 
 ### Finding the device
 
-- On your network the controller currently appears at **`192.168.1.4`**
+- On your network the controller currently appears at **`192.168.1.75`**
   (assigned by your router; it may change — check your router's device list, or
   the **IP Address** entity in Home Assistant).
 - If it can't join your Wi-Fi, it always broadcasts its own fallback hotspot
@@ -216,6 +216,7 @@ some latch until acknowledged or until conditions return to normal.
 | `COMPRESSOR OVERTEMP` | Compressor too hot — off until it cools. |
 | `BLIND DUTY CYCLE` | Both fridge sensors failed; running on timed cooling. |
 | `UPPER / LOWER SENSOR FAULT` | One fridge sensor failed (still running on the other). |
+| `CHAMBER TOO COLD` | The fridge is 2.5 °C or more below the target (never lower than −1 °C). The compressor is locked out until it warms 1 °C back up, whatever is asking for cooling, Turbo included. In normal use it means something forced cooling too far. It is also expected for a while after the fridge has been running sub-zero. Clears on its own. |
 | `DOOR OPEN` | Door left open too long. |
 | `FOOD SAFETY ALERT` | Fridge stayed too warm for 2 hours. |
 | `FREEZER FOOD SAFETY` | Freezer stayed above its critical limit for 2 hours. |
@@ -331,6 +332,7 @@ reading, so damping the probes cannot change when or how long defrost runs.
 | Door → fan cut-off | 1 minute open |
 | Door → compressor cut-off | 5 minutes open |
 | Turbo duration | 30 minutes |
+| Chamber floor (compressor lock-out) | target −2.5 °C, never below −1 °C; releases 1 °C above |
 | Buzzer silence duration | 10 minutes |
 | Compressor over-temp cut-off | 75 °C (clears at 55 °C) |
 | Overcurrent threshold | ~5 A sustained |

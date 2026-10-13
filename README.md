@@ -28,6 +28,22 @@ This firmware splits the work across FreeRTOS tasks:
 A stuck OneWire read now only delays the sensor task; the control loop
 keeps feeding the watchdog and keeps the compressor safe.
 
+### Deliberate departures from the YAML
+
+- **Timer wraparound fix.** The YAML stored "off" as `0` in its turbo,
+  buzzer-silence, fan run-on and setpoint-display timers and tested them with
+  `(int32_t)(until - millis()) > 0`. Once uptime passes 2³¹ ms (24.8 days),
+  that reads `0` as *active*. Turbo switches itself on and can't be switched
+  off, alarms go silent, and the panel LEDs freeze. The ESPHome build never
+  stayed up that long. This firmware did, and over-cooled the fridge to −7 °C
+  (2026-10-12). Fixed with `deadline_pending()` / `deadline_after()` in
+  `src/app_state.h`.
+- **Chamber hard floor.** Whatever is asking for cooling, the compressor is
+  locked out once the fridge is 2.5 °C below the target (never lower than
+  −1 °C), and allowed again 1 °C above that. Alarm `CHAMBER TOO COLD`.
+  Normal cycles never reach it, so it is purely a backstop against control
+  bugs like the one above.
+
 ## Layout
 
 ```

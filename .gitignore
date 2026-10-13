@@ -16,3 +16,6 @@ claude --resume*
 
 # Keep the example, never commit real credentials
 src/secrets.h
+
+# Claude Code per-machine permissions (project skills in .claude/skills are shared)
+.claude/settings.local.json
