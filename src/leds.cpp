@@ -129,6 +129,7 @@ static void led_tick(void) {
     if (door_eff && g.door_open_ms > 0 &&
         (uint32_t)(now - g.door_open_ms) > DOOR_WARN_MS) warning = true;
     if (g.comp_blocked) warning = true;
+    if (g.chamber_floor_trip) warning = true;
 
     if (critical)      led3(true);
     else if (warning)  led3(slow_blink);

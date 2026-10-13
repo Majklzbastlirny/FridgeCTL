@@ -69,6 +69,7 @@ struct AppState {
     bool     overcurrent_fault = false;
     uint8_t  overcurrent_count = 0;
     bool     comp_blocked     = false;   // min-off-time block this cycle
+    bool     chamber_floor_trip = false; // chamber below hard floor -> comp locked out
     uint8_t  no_current_count = 0;
     uint8_t  intermittent_zeros = 0;
 

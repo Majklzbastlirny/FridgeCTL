@@ -63,6 +63,7 @@ static void control_tick(void) {
         // Re-arm initial-cooldown: while off the chamber warms, so on the
         // next enable we again report INITIAL COOLDOWN until it pulls down.
         g.reached_setpoint = false;
+        g.chamber_floor_trip = false;
         g.control_beats++;     // keep the OTA heartbeat alive even when off
         return;
     }
@@ -302,7 +303,30 @@ static void control_tick(void) {
         }
     }
 
+    // ---- Safety: chamber hard floor (beyond the ESPHome spec) ----
+    // Independent backstop for the demand logic above: whatever is asking for
+    // cooling (turbo, a stuck deadline, a bad setpoint), never run the
+    // compressor once the chamber is well below where normal control would
+    // already have stopped. Added after the turbo wraparound bug ran the
+    // compressor nonstop down to -7 C on 2026-10-12. Blind mode has no chamber
+    // reading to judge, so its duty cycle stays the only control there.
+    if (isnan(t_ctrl)) {
+        g.chamber_floor_trip = false;
+    } else {
+        float floor_c = setpoint - HYST_BELOW_C - CHAMBER_FLOOR_MARGIN_C;
+        if (floor_c < CHAMBER_FLOOR_ABS_C) floor_c = CHAMBER_FLOOR_ABS_C;
+        if (!g.chamber_floor_trip && t_ctrl < floor_c) {
+            g.chamber_floor_trip = true;
+            ESP_LOGW(TAG, "CHAMBER FLOOR: %.1f C below %.1f C - compressor locked out",
+                     t_ctrl, floor_c);
+        } else if (g.chamber_floor_trip && t_ctrl > floor_c + CHAMBER_FLOOR_HYST_C) {
+            g.chamber_floor_trip = false;
+            ESP_LOGI(TAG, "Chamber floor cleared (%.1f C)", t_ctrl);
+        }
+    }
+
     // ---- Safety overrides (always win) ----
+    if (g.chamber_floor_trip)       want = false;
     if (g.overcurrent_fault)        want = false;
     if (g.comp_overtemp)            want = false;
     if (door_dur > DOOR_COMP_CUTOFF_MS) want = false;
@@ -606,6 +630,7 @@ std::string ctl_alarm_state(void) {
     if (!u_ok && !l_ok) return "BLIND DUTY CYCLE";
     if (!u_ok)          return "UPPER SENSOR FAULT";
     if (!l_ok)          return "LOWER SENSOR FAULT";
+    if (g.chamber_floor_trip) return "CHAMBER TOO COLD";
 
     float tc = g.temp_compressor;
     bool tc_ok = !isnan(tc) && tc > TEMP_COMP_MIN_C && tc < TEMP_COMP_MAX_C;

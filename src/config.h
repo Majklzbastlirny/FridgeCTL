@@ -97,6 +97,15 @@
 #define HYST_ABOVE_C             1.5f      // turn on when t > sp + this
 #define HYST_BELOW_C             0.5f      // turn off when t < sp - this
 
+// Chamber hard floor (not in the ESPHome spec). Compressor is locked out below
+// max(sp - HYST_BELOW_C - MARGIN, ABS) and released FLOOR_HYST above that.
+// Normal cycles overshoot the off-point by ~0.4 C, so the 2 C margin never
+// trips in normal operation; at sp 4 it trips at 1.5 C. ABS is the backstop
+// for a low or corrupted setpoint (sp 1 -> -1.0 C rather than -1.5 C).
+#define CHAMBER_FLOOR_MARGIN_C   2.0f
+#define CHAMBER_FLOOR_ABS_C      -1.0f
+#define CHAMBER_FLOOR_HYST_C     1.0f
+
 #define DEFAULT_SETPOINT_C       4.0f
 #define FAN_RUNON_MS             120000    // 2 min fan run-on after compressor
 #define DOOR_FAN_CUTOFF_MS       60000     // door open > 1 min -> fan off

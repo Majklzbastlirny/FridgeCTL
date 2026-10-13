@@ -35,7 +35,8 @@ pio device monitor      # serial @ 115200
 - Build is **verified passing**: Flash 57.9% (~890 KB of 1.5 MB app slot),
   RAM 20.3% (66.6 KB — the jump from 13.2% is the 19 KB log ring in
   `logbuf.cpp`). Two OTA app slots (`partitions.csv`), 4 MB flash. Device runs at
-  `192.168.1.4` (DHCP) and has been flashed + OTA-tested on real hardware.
+  `192.168.1.75` (DHCP; it was `.4` until 2026-10, and HA's IP Address sensor
+  always has the current one) and has been flashed + OTA-tested on real hardware.
 - **OTA after first USB flash**: use the web UI (below) — browse to
   `http://<device-ip>/control` (Basic auth) → Firmware section → upload
   `.pio/build/fridgectl/firmware.bin`. Or POST it:
@@ -263,6 +264,14 @@ temp rate-of-change anomaly, 3-LED status UI, button short/double/long actions,
 interior light follows physical door. Persisted (NVS, deferred 5 min):
 runtime/starts counters, duty EMA, efficiency, temp history, freezer latches,
 all setpoints/config numbers, system_enable/door_override/vacation switches.
+
+**Beyond the spec: chamber hard floor (2026-10-13).** The compressor is locked
+out while `t_ctrl` < max(sp − 0.5 − 2.0, −1.0) °C and released 1 °C above that
+(`CHAMBER_FLOOR_*` in config.h). It shows as alarm `CHAMBER TOO COLD`, binary
+sensor `chamber_too_cold`, and LED3 slow blink. It is a backstop against any
+demand-logic bug, such as the turbo wraparound that ran the compressor nonstop
+to −7 °C. Normal cycles never reach it, so it only trips when something forces
+cooling past the setpoint.
 
 ## Post-migration additions (native firmware only, NOT in fridgectl.yaml)
 

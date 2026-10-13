@@ -69,6 +69,7 @@ BGET(ct_fault,      g.no_current_count >= CT_NO_CURRENT_COUNT)
 BGET(cap_fault,     g.intermittent_zeros >= CAP_FAULT_COUNT)
 BGET(defrost,       g.defrost_active)
 BGET(door,          g.door_phys)
+BGET(chamber_floor, g.chamber_floor_trip)
 static bool bg_blind(void){ return ctl_blind_mode(); }
 static bool bg_comp_temp_fault(void){ return ctl_comp_temp_fault(); }
 static bool bg_freezer_sensor_fault(void){ return ctl_freezer_sensor_fault(); }
@@ -192,6 +193,7 @@ static const BinEnt BINS[] = {
   {"ota_failed","Firmware Update Failed","problem","mdi:cloud-alert",bg_ota_failed},
   {"temp_rising","Temp Rising While Cooling","problem","mdi:thermometer-alert",bg_temp_rising},
   {"high_duty","High Duty Cycle","problem","mdi:gauge-full",bg_high_duty},
+  {"chamber_too_cold","Chamber Too Cold","problem","mdi:snowflake-thermometer",bg_chamber_floor},
   {"door","Door","door",nullptr,bg_door},
 };
 
