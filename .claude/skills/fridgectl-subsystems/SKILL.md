@@ -233,6 +233,9 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
   System Enable came back on (persisted). The floor tripped on the first tick
   (`CHAMBER FLOOR: -4.0 C below 1.5 C`), alarm `CHAMBER TOO COLD`, binary on.
   Turbo switched on while tripped: compressor stayed off.
+- Natural expiry (the `expire_deadlines()` sweep): turbo was switched on at
+  80087 ms of uptime and the log showed `Turbo expired` at 1882506 ms, i.e.
+  30 min 2.4 s (within one 5 s tick). HA showed it off, compressor never ran.
 
 ## Hardware-verified (2026-08-06, device at 192.168.1.4)
 
