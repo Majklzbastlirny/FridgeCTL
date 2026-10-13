@@ -173,7 +173,12 @@ State sharing: everything lives in `AppState g` (app_state.h), guarded by one
 **recursive** mutex. Use `StateGuard lock;` (RAII) for a coherent
 read-modify-write. `control_tick()` runs entirely under the lock and does no
 blocking I/O. `millis()` is an `esp_timer`-based ms counter (wraps ~49 days,
-matching Arduino semantics the ESPHome logic assumed).
+matching Arduino semantics the ESPHome logic assumed). **Deadlines (`*_until`)
+must use `deadline_pending()` / `deadline_after()`** from app_state.h, never a
+raw `(int32_t)(until - now) > 0`: with a 0 "off" sentinel that reads as ON
+after 24.8 days of uptime. That is exactly how turbo latched on and froze the
+chamber to −7 °C on 2026-10-12, a bug inherited from the ESPHome YAML.
+Elapsed-time checks `(uint32_t)(now - start) > X` are wrap-safe as-is.
 
 ## Home Assistant integration (MQTT Discovery)
 

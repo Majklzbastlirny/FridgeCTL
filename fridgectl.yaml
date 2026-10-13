@@ -106,6 +106,11 @@ globals:
     initial_value: "false"
 
   # Turbo mode (millis expiry)
+  # LATENT BUG in this spec (found 2026-10-13, fixed in src/): 0 = "off" plus
+  # the signed `(int32_t)(until - millis()) > 0` test reads as ON once uptime
+  # passes 2^31 ms (24.8 days) - turbo switches itself on and can't be turned
+  # off. Same for fan run-on, buzzer silence and setpoint display. Don't port
+  # this pattern again; see deadline_pending() in src/app_state.h.
   - id: g_turbo_until_ms
     type: uint32_t
     restore_value: no

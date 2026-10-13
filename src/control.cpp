@@ -24,6 +24,19 @@ static float high_duty_threshold(float amb) {
     return thr;
 }
 
+// Clear expired deadlines back to 0 (see deadline_pending() in app_state.h).
+// Runs every tick before any early return - system off, OTA, boot - so no
+// deadline can sit expired long enough to wrap back into the "future".
+static void expire_deadlines(uint32_t now) {
+    if (g.turbo_until_ms && !deadline_pending(g.turbo_until_ms, now)) {
+        g.turbo_until_ms = 0;
+        ESP_LOGI(TAG, "Turbo expired");
+    }
+    if (!deadline_pending(g.fan_runon_until, now))      g.fan_runon_until = 0;
+    if (!deadline_pending(g.buzzer_silence_until, now)) g.buzzer_silence_until = 0;
+    if (!deadline_pending(g.setpoint_show_until, now))  g.setpoint_show_until = 0;
+}
+
 // ================================================================
 //  Main control tick — faithful port of the ESPHome 5 s interval.
 //  Runs entirely under the state lock; performs no blocking I/O.
@@ -31,6 +44,7 @@ static float high_duty_threshold(float amb) {
 static void control_tick(void) {
     StateGuard lock;
     uint32_t now = millis();
+    expire_deadlines(now);
     if (!g.boot_done) return;
 
     // ---- OTA in progress: do NOT touch relays. ----
@@ -251,7 +265,7 @@ static void control_tick(void) {
     if (door_open && g.door_open_ms > 0) door_dur = (uint32_t)(now - g.door_open_ms);
 
     // ---- Turbo active? ----
-    bool turbo = (int32_t)(g.turbo_until_ms - now) > 0;
+    bool turbo = deadline_pending(g.turbo_until_ms, now);
 
     // ---- Determine cooling demand ----
     bool want = false;
@@ -335,8 +349,8 @@ static void control_tick(void) {
         want_fan = true;
     } else if (g.comp_on) {
         want_fan = true;
-        g.fan_runon_until = now + FAN_RUNON_MS;
-    } else if ((int32_t)(g.fan_runon_until - now) > 0) {
+        g.fan_runon_until = deadline_after(now, FAN_RUNON_MS);
+    } else if (deadline_pending(g.fan_runon_until, now)) {
         want_fan = true;
     }
     if (door_dur > DOOR_FAN_CUTOFF_MS && !g.defrost_active) want_fan = false;
@@ -346,7 +360,7 @@ static void control_tick(void) {
 
     // ---- Buzzer (K2 piezo) ----
     bool should_buzz = false;
-    bool silenced = (int32_t)(g.buzzer_silence_until - now) > 0;
+    bool silenced = deadline_pending(g.buzzer_silence_until, now);
     if (!silenced) {
         if (g.overcurrent_fault) should_buzz = true;
         if (g.comp_overtemp)     should_buzz = true;
@@ -520,7 +534,7 @@ float ctl_efficiency(void) {
 
 bool ctl_turbo(void) {
     StateGuard lock;
-    return (int32_t)(g.turbo_until_ms - millis()) > 0;
+    return deadline_pending(g.turbo_until_ms, millis());
 }
 
 bool ctl_blind_mode(void) {
@@ -657,7 +671,7 @@ void ctl_trigger_defrost(void) {
 void ctl_set_turbo(bool on) {
     StateGuard lock;
     if (on) {
-        g.turbo_until_ms = millis() + TURBO_DURATION_MS;
+        g.turbo_until_ms = deadline_after(millis(), TURBO_DURATION_MS);
         ESP_LOGI(TAG, "Turbo ON (30 min)");
     } else {
         g.turbo_until_ms = 0;
@@ -671,7 +685,7 @@ void ctl_set_turbo(bool on) {
 void on_button_press_raw(void) {
     StateGuard lock;
     if (g.k2_on) {
-        g.buzzer_silence_until = millis() + BUZZER_SILENCE_MS;
+        g.buzzer_silence_until = deadline_after(millis(), BUZZER_SILENCE_MS);
         relay_k2(false);
         g.k2_on = false;
         ESP_LOGI(TAG, "Buzzer silenced 10 min");
@@ -687,7 +701,7 @@ void on_button_short(void) {
     else if (sp < 7.0f) sp = 8.0f;
     else                sp = 2.0f;
     g.target_temp = sp;
-    g.setpoint_show_until = millis() + SETPOINT_SHOW_MS;
+    g.setpoint_show_until = deadline_after(millis(), SETPOINT_SHOW_MS);
     nvs_store_mark_dirty();
     ESP_LOGI(TAG, "Setpoint -> %.1f C", sp);
 }
@@ -714,12 +728,12 @@ void on_button_long(void) {
     {
         StateGuard lock;
         uint32_t now = millis();
-        if ((int32_t)(g.turbo_until_ms - now) > 0) {
+        if (deadline_pending(g.turbo_until_ms, now)) {
             g.turbo_until_ms = 0;
             now_on = false;
             ESP_LOGI(TAG, "Turbo CANCELLED");
         } else {
-            g.turbo_until_ms = now + TURBO_DURATION_MS;
+            g.turbo_until_ms = deadline_after(now, TURBO_DURATION_MS);
             now_on = true;
             ESP_LOGI(TAG, "Turbo ON (30 min)");
         }

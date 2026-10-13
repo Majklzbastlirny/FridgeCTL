@@ -37,6 +37,10 @@ static void telemetry_task(void *arg) {
 extern "C" void app_main(void) {
     logbuf_init();         // capture logs from the first line on (/api/logs)
     ESP_LOGI(TAG, "FridgeCTL " FW_VERSION " booting");
+#ifdef FRIDGECTL_CLOCK_OFFSET_MS
+    ESP_LOGW(TAG, "TEST BUILD: millis() offset by %lu ms, now %lu - do not leave deployed",
+             (unsigned long)(uint32_t)FRIDGECTL_CLOCK_OFFSET_MS, (unsigned long)millis());
+#endif
 
     // ---- Core init (order matters) ----
     state_init_mutex();

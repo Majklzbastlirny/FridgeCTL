@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -50,7 +51,9 @@ FGET(duty_pct,        g.duty_pct * 100.0f)
 static float fg_control_temp(void){ return ctl_control_temp(); }
 static float fg_efficiency(void) { return ctl_efficiency(); }
 static float fg_rssi(void){ StateGuard l; return (float)g.wifi_rssi; }
-static float fg_uptime(void){ return millis() / 1000.0f; }
+// 64-bit timer, not millis(): that wraps at 49.7 days and would make the
+// uptime sensor drop to 0 as if the board had rebooted.
+static float fg_uptime(void){ return (float)(esp_timer_get_time() / 1000000LL); }
 static float fg_heap_free(void){ return (float)esp_get_free_heap_size(); }
 static float fg_heap_block(void){ return (float)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT); }
 

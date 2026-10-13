@@ -165,6 +165,27 @@ struct StateGuard {
 // millis() equivalent — ms since boot, wraps at ~49 days like Arduino.
 uint32_t millis(void);
 
+// ---- Deadlines (the *_until fields): a millis() value, 0 = not set ----
+// The signed-difference test `(int32_t)(until - now) > 0` only reaches
+// +/-24.8 days. Ported 1:1 from the ESPHome YAML, it was a time bomb:
+// once uptime passed 2^31 ms, `0 - now` wrapped positive, so the 0 "off"
+// sentinel read as "active for another 24.8 days". On 2026-10-12 turbo
+// switched itself on at uptime 2147483 s, could not be switched off
+// (writing 0 is still "on"), and ran the compressor nonstop until the
+// chamber sat at -7 C. ESPHome never got that far because it crashed first.
+// A stale deadline flips the same way 24.8 days after it expired. Rules:
+//   - test only with deadline_pending() (the != 0 guard),
+//   - set only with deadline_after() (never yields the 0 sentinel),
+//   - control_tick() clears expired deadlines back to 0 every 5 s, so
+//     none can age into the wrap zone.
+static inline bool deadline_pending(uint32_t until, uint32_t now) {
+    return until != 0 && (int32_t)(until - now) > 0;
+}
+static inline uint32_t deadline_after(uint32_t now, uint32_t dur_ms) {
+    uint32_t d = now + dur_ms;
+    return d ? d : 1;
+}
+
 // Sensor sanity helpers.
 static inline bool valid_chamber(float t) {
     return !isnan(t) && t > -40.0f && t < 50.0f;

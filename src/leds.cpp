@@ -73,7 +73,7 @@ static void led_tick(void) {
     }
 
     // ---- Setpoint display (3 s after change) ----
-    if ((int32_t)(g.setpoint_show_until - now) > 0) {
+    if (deadline_pending(g.setpoint_show_until, now)) {
         float sp = g.target_temp;
         int level;
         if (sp <= 2.5f)      level = 1;
@@ -95,7 +95,7 @@ static void led_tick(void) {
     bool u_ok = valid_chamber(g.temp_upper);
     bool l_ok = valid_chamber(g.temp_lower);
     bool sensor_ok = u_ok || l_ok;
-    bool turbo = (int32_t)(g.turbo_until_ms - now) > 0;
+    bool turbo = deadline_pending(g.turbo_until_ms, now);
     bool blind = !u_ok && !l_ok;
 
     // LED1: system — solid OK, fast blink degraded/fault
