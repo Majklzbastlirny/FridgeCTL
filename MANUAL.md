@@ -156,7 +156,8 @@ Open a browser to the device's address.
 - **Password protected** (username `admin` by default; password is the one set
   when the firmware was built).
 - Full control: every switch (System Enable, Turbo, Vacation, Door Override,
-  Freezer Sensor, K1 spare), every setpoint and configuration value, action
+  Freezer Sensor, Freezer Assist, Fan Inhibit, K1 spare), every setpoint and
+  configuration value, action
   buttons (Reset Overcurrent, Trigger Defrost, Restart), and **firmware upload**.
 
 > **Freezer Sensor** switch: turn this **off** if you remove or disconnect the
@@ -183,6 +184,35 @@ do on the web control page you can also do from Home Assistant.
 | Defrost Duration | 5–30 min | How long a defrost lasts |
 | Freezer Warm / Cold / Critical Thresholds | various | When freezer alarms trigger |
 | Upper / Lower / Compressor / Ambient / Freezer Temp Offset | −5…+5 °C | Per-sensor calibration trim added to that probe's reading |
+| Freezer Target | −24…−10 °C | Freezer Assist engages while the freezer is warmer than this (default −18) |
+| Freezer Assist Offset | 0–1 °C | How far the fridge setpoint drops while Freezer Assist is active (default 1) |
+
+### Cold rooms: Freezer Assist and Fan Inhibit
+
+The fridge and freezer share one compressor, and only the fridge has a
+thermostat. The freezer gets cold only while the fridge is asking for cooling.
+In a cold room (garage, cellar) the fridge hardly asks, so the freezer drifts
+warm. At a 12 °C room this four-star freezer settled near −12 °C instead of
+−18 °C. Software cannot cool the freezer on its own; it can only make the
+compressor run more, which also makes the fridge colder. Two switches control
+that trade:
+
+- **Freezer Assist**: while the freezer is warmer than **Freezer Target**, the
+  fridge runs as if its target were **Freezer Assist Offset** lower. At a 4 °C
+  target the compressor then stops at 2.5 °C instead of 3.5 °C. The offset is
+  capped so the fridge always stays at least 1 °C above the `CHAMBER TOO COLD`
+  limit. For a bigger trade, lower **Target Temperature** itself.
+- **Fan Inhibit**: keeps the fridge fan off while the compressor runs (it
+  still helps during defrost). The fan cools the fridge quickly, which ends
+  every run early; without it, runs last longer and the freezer gets more
+  cooling. Expect a bigger difference between the upper and lower fridge
+  sensors.
+
+Try one at a time and give each a couple of days. The **Compressor Duty
+Cycle** and **Freezer Temp** history in Home Assistant show whether it helps.
+Don't expect −18 °C in a very cold room. This appliance is rated for climate
+class SN-T (10–43 °C rooms), so below 10 °C it is outside its design range
+whatever the controller does.
 
 ### Calibrating the temperature sensors
 
@@ -333,6 +363,8 @@ reading, so damping the probes cannot change when or how long defrost runs.
 | Door → compressor cut-off | 5 minutes open |
 | Turbo duration | 30 minutes |
 | Chamber floor (compressor lock-out) | target −2.5 °C, never below −1 °C; releases 1 °C above |
+| Freezer Assist hysteresis | on above Freezer Target +1 °C, off below −1 °C |
+| Natural defrost credit | compressor off ≥ 60 min resets the forced-defrost counter |
 | Buzzer silence duration | 10 minutes |
 | Compressor over-temp cut-off | 75 °C (clears at 55 °C) |
 | Overcurrent threshold | ~5 A sustained |

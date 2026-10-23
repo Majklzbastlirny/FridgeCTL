@@ -70,6 +70,7 @@ struct AppState {
     uint8_t  overcurrent_count = 0;
     bool     comp_blocked     = false;   // min-off-time block this cycle
     bool     chamber_floor_trip = false; // chamber below hard floor -> comp locked out
+    bool     freezer_assist_active = false; // freezer above target -> setpoint shifted
     uint8_t  no_current_count = 0;
     uint8_t  intermittent_zeros = 0;
 
@@ -115,7 +116,8 @@ struct AppState {
     float    freezer_warm_thr = -12.0f;
     float    freezer_cold_thr = -28.0f;
     float    freezer_crit_thr = 0.0f;
-
+    float    freezer_target   = -18.0f;  // freezer assist engages above this
+    float    assist_offset    = 1.0f;    // °C the fridge setpoint drops by in assist
     // ---- Per-sensor temperature calibration offsets (°C, persist) ----
     // Added to each raw DS18B20 reading before publishing. Default 0 = no
     // correction. Estimated from a stabilised all-at-ambient soak (no truth
@@ -140,6 +142,9 @@ struct AppState {
     bool     vacation_mode    = false;   // persist (default OFF)
     bool     freezer_sensor_enable = true; // persist (default ON); OFF = ignore
                                            // freezer probe (no fault, no alarms)
+    bool     freezer_assist_enable = false; // persist (default OFF)
+    bool     fan_inhibit      = false;   // persist (default OFF): no fan with the
+                                         // compressor or run-on (defrost still uses it)
 
     // ---- Net status (for text/diag sensors) ----
     bool     wifi_connected   = false;

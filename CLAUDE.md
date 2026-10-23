@@ -259,6 +259,26 @@ demand-logic bug, such as the turbo wraparound that ran the compressor nonstop
 to −7 °C. Normal cycles never reach it, so it only trips when something forces
 cooling past the setpoint.
 
+**Beyond the spec: cold-room freezer support (2026-10-23).** The appliance is
+an Indesit LR9 S2Q F W B: four-star 111 L freezer, climate class SN-T, the
+original fan switchable, no compensation heater. It sits in an unheated room
+(12 °C now, down to 8 °C in winter). One compressor and series coils mean the
+freezer only gets the fridge's runtime; at 12 °C that was ~16% duty and the
+freezer settled at ~−11.7 °C.
+- **Freezer Assist** switch: while freezer > `freezer_target` + 1 (released
+  below target − 1), the *demand* thresholds use `sp − assist_offset`. The
+  floor and `reached_setpoint` keep using the user setpoint, and the applied
+  offset is clamped so the assisted cut-out stays
+  `FREEZER_ASSIST_FLOOR_GAP_C` above the floor.
+- **Fan Inhibit** switch: no fan with the compressor or run-on; defrost
+  still uses it.
+- **Natural defrost credit**: compressor off ≥ `DEFROST_NATURAL_OFF_MS`
+  (60 min) zeroes `defrost_comp_min`.
+
+The assist and fan switches default OFF. Chamber probes are in glycol 5 cm
+from the cold rear wall, so with the fan off they may read colder than the
+middle of the fridge. Measure, don't assume.
+
 ## Subsystem notes (lazily loaded)
 
 Per-subsystem design rationale, the post-migration feature history, and the

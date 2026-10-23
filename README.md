@@ -43,6 +43,20 @@ keeps feeding the watchdog and keeps the compressor safe.
   −1 °C), and allowed again 1 °C above that. Alarm `CHAMBER TOO COLD`.
   Normal cycles never reach it, so it is purely a backstop against control
   bugs like the one above.
+- **Freezer assist** (off by default). One compressor and series coils mean
+  the freezer only gets the runtime the fridge asks for, and in a cold room
+  the fridge hardly asks. At 12 °C the freezer of this four-star unit settled
+  near −12 °C. While the freezer is above **Freezer Target**, the fridge
+  setpoint used for compressor demand drops by **Freezer Assist Offset**
+  (≤ 1 °C, clamped to stay 1 °C above the hard floor). That trades a colder
+  fridge for a colder freezer.
+- **Fan Inhibit** switch (off by default). It keeps the fridge fan off with
+  the compressor and run-on, so runs last longer and the freezer gets more of
+  them. The fan still runs during defrost.
+- **Natural defrost credit.** A compressor-off period of ≥ 60 min resets the
+  runtime-based forced-defrost counter, because the cold wall has already
+  defrosted by itself. This stops a forced defrost interrupting a run that
+  follows a long off period.
 
 ## Layout
 

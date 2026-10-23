@@ -64,6 +64,7 @@ static void control_tick(void) {
         // next enable we again report INITIAL COOLDOWN until it pulls down.
         g.reached_setpoint = false;
         g.chamber_floor_trip = false;
+        g.freezer_assist_active = false;
         g.control_beats++;     // keep the OTA heartbeat alive even when off
         return;
     }
@@ -268,6 +269,42 @@ static void control_tick(void) {
     // ---- Turbo active? ----
     bool turbo = deadline_pending(g.turbo_until_ms, now);
 
+    // ---- Chamber hard-floor threshold (from the USER setpoint) ----
+    float floor_c = setpoint - HYST_BELOW_C - CHAMBER_FLOOR_MARGIN_C;
+    if (floor_c < CHAMBER_FLOOR_ABS_C) floor_c = CHAMBER_FLOOR_ABS_C;
+
+    // ---- Freezer assist (beyond the ESPHome spec) ----
+    // One compressor, coils in series: the freezer only gets the runtime the
+    // fridge asks for. In a cold room the fridge barely asks (12 C room: ~16%
+    // duty, freezer settles near -12 C; an 8 C room is far worse). While the
+    // freezer is above its target, the setpoint the demand logic uses drops by
+    // assist_offset, so the fridge cycles more often and longer at a colder
+    // temperature: a colder fridge traded for a colder freezer. The floor and
+    // the initial-cooldown latch keep using the user setpoint, and the shift
+    // is clamped so the assisted cut-out stays FREEZER_ASSIST_FLOOR_GAP_C
+    // above the floor. A deeper trade means lowering Target Temperature.
+    bool frz_ok = g.freezer_sensor_enable && !isnan(t_frz) &&
+                  t_frz > TEMP_FREEZER_MIN_C && t_frz < TEMP_FREEZER_MAX_C;
+    bool assist = g.freezer_assist_active;
+    if (!g.freezer_assist_enable || !frz_ok || blind_mode) {
+        assist = false;
+    } else {
+        float tgt = isnan(g.freezer_target) ? -18.0f : g.freezer_target;
+        if (!assist && t_frz > tgt + FREEZER_ASSIST_HYST_C)      assist = true;
+        else if (assist && t_frz < tgt - FREEZER_ASSIST_HYST_C)  assist = false;
+    }
+    if (assist != g.freezer_assist_active) {
+        g.freezer_assist_active = assist;
+        ESP_LOGI(TAG, "Freezer assist %s (freezer %.1f C)", assist ? "ON" : "OFF", t_frz);
+    }
+    float sp_ctl = setpoint;
+    if (assist) {
+        float off = isnan(g.assist_offset) ? 0.0f : g.assist_offset;
+        float max_off = (setpoint - HYST_BELOW_C) - (floor_c + FREEZER_ASSIST_FLOOR_GAP_C);
+        if (off > max_off) off = max_off;
+        if (off > 0.0f) sp_ctl = setpoint - off;
+    }
+
     // ---- Determine cooling demand ----
     bool want = false;
     if (g.defrost_active) {
@@ -294,9 +331,9 @@ static void control_tick(void) {
         g.duty_phase_ms = 0;
         if (turbo) {
             want = true;
-        } else if (t_ctrl > setpoint + HYST_ABOVE_C) {
+        } else if (t_ctrl > sp_ctl + HYST_ABOVE_C) {
             want = true;
-        } else if (t_ctrl < setpoint - HYST_BELOW_C) {
+        } else if (t_ctrl < sp_ctl - HYST_BELOW_C) {
             want = false;
         } else {
             want = comp_on;   // dead-band: maintain
@@ -313,8 +350,6 @@ static void control_tick(void) {
     if (isnan(t_ctrl)) {
         g.chamber_floor_trip = false;
     } else {
-        float floor_c = setpoint - HYST_BELOW_C - CHAMBER_FLOOR_MARGIN_C;
-        if (floor_c < CHAMBER_FLOOR_ABS_C) floor_c = CHAMBER_FLOOR_ABS_C;
         if (!g.chamber_floor_trip && t_ctrl < floor_c) {
             g.chamber_floor_trip = true;
             ESP_LOGW(TAG, "CHAMBER FLOOR: %.1f C below %.1f C - compressor locked out",
@@ -350,9 +385,10 @@ static void control_tick(void) {
         g.intermittent_zeros = 0;
         g.inrush_peak = 0.0f;                // reset for fresh inrush capture
         g.eff_start_temp = isnan(t_ctrl) ? -999.0f : t_ctrl;
-        ESP_LOGI(TAG, "Compressor ON  (t=%.1f sp=%.1f %s%s)",
-                 isnan(t_ctrl) ? -999.0f : t_ctrl, setpoint,
-                 turbo ? "TURBO " : "", blind_mode ? "BLIND" : "");
+        ESP_LOGI(TAG, "Compressor ON  (t=%.1f sp=%.1f %s%s%s)",
+                 isnan(t_ctrl) ? -999.0f : t_ctrl, sp_ctl,
+                 turbo ? "TURBO " : "", blind_mode ? "BLIND " : "",
+                 assist ? "ASSIST" : "");
     } else if (!want && comp_on) {
         relay_comp(false);
         diag_event(DIAG_COMP_OFF);
@@ -362,9 +398,9 @@ static void control_tick(void) {
             float run_min = (float)((uint32_t)(now - g.comp_start_ms)) / 60000.0f;
             if (run_min > 5.0f) g.eff_value = (g.eff_start_temp - t_ctrl) / run_min;
         }
-        ESP_LOGI(TAG, "Compressor OFF (t=%.1f sp=%.1f eff=%.3f%s)",
-                 isnan(t_ctrl) ? -999.0f : t_ctrl, setpoint,
-                 g.eff_value, blind_mode ? " BLIND" : "");
+        ESP_LOGI(TAG, "Compressor OFF (t=%.1f sp=%.1f eff=%.3f%s%s)",
+                 isnan(t_ctrl) ? -999.0f : t_ctrl, sp_ctl,
+                 g.eff_value, blind_mode ? " BLIND" : "", assist ? " ASSIST" : "");
     }
 
     // ---- Fan logic ----
@@ -378,6 +414,11 @@ static void control_tick(void) {
         want_fan = true;
     }
     if (door_dur > DOOR_FAN_CUTOFF_MS && !g.defrost_active) want_fan = false;
+    // Fan Inhibit (beyond the spec): the fan blows chamber air onto the cold
+    // rear wall, so the fridge satisfies itself sooner and every run ends
+    // early, leaving the freezer short. Inhibited, runs last longer. Defrost
+    // still uses the fan (compressor is off then, so it costs the freezer nothing).
+    if (g.fan_inhibit && !g.defrost_active) want_fan = false;
 
     if (want_fan && !g.fan_on) { relay_fan(true);  g.fan_on = true;  diag_event(DIAG_FAN_ON); }
     if (!want_fan && g.fan_on) { relay_fan(false); g.fan_on = false; diag_event(DIAG_FAN_OFF); }
@@ -424,6 +465,16 @@ static void control_tick(void) {
         }
         g.runtime_tick = 0;
         g.defrost_tick = 0;
+        // Natural defrost credit (beyond the spec): a long enough off period
+        // lets the cold wall defrost by itself, so don't later force a defrost
+        // mid-run for runtime that was already followed by one. Seen in the
+        // data: a forced defrost cut in 2 min into a run, straight after 4 h off.
+        if (g.defrost_comp_min > 0 && !g.defrost_active && g.comp_stop_ms != 0 &&
+            (uint32_t)(now - g.comp_stop_ms) >= DEFROST_NATURAL_OFF_MS) {
+            ESP_LOGI(TAG, "Defrost counter reset after %lu min off (natural defrost)",
+                     (unsigned long)((uint32_t)(now - g.comp_stop_ms) / 60000));
+            g.defrost_comp_min = 0;
+        }
     }
 
     // ---- Duty cycle EMA (~1 h time constant) ----

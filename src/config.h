@@ -106,6 +106,21 @@
 #define CHAMBER_FLOOR_ABS_C      -1.0f
 #define CHAMBER_FLOOR_HYST_C     1.0f
 
+// Freezer assist (not in the ESPHome spec). While the freezer is warmer than
+// its target, the fridge setpoint used for compressor demand drops by the
+// assist offset. Active above target + HYST, released below target - HYST.
+// The applied offset is clamped so the assisted cut-out stays FLOOR_GAP above
+// the chamber floor (cycles overshoot the cut-out by ~0.4 C), keeping CHAMBER
+// TOO COLD a fault indicator rather than a routine stop.
+#define FREEZER_ASSIST_HYST_C      1.0f
+#define FREEZER_ASSIST_FLOOR_GAP_C 1.0f
+
+// Natural defrost credit (not in the ESPHome spec): a compressor-off period
+// this long lets the fridge's cold wall defrost passively, so the runtime-
+// based forced-defrost counter is reset. 60 min, not the 20 min forced
+// defrost, because without the fan blowing on the wall it melts slower.
+#define DEFROST_NATURAL_OFF_MS   3600000
+
 #define DEFAULT_SETPOINT_C       4.0f
 #define FAN_RUNON_MS             120000    // 2 min fan run-on after compressor
 #define DOOR_FAN_CUTOFF_MS       60000     // door open > 1 min -> fan off

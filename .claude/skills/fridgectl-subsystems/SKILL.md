@@ -222,6 +222,56 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
   runaway episode, expect `CHAMBER TOO COLD` right after boot until the chamber
   warms past floor + 1 °C. That is correct, not a fault.
 
+- **Cold-room freezer support (2026-10-23).** Evidence from `history (85).csv`
+  (9 days after the wraparound fix, 10 days uptime, zero resets):
+  - Ambient was ~12 °C and duty 16.5%: 5 runs a day of ~48 min, ~4 h off.
+  - Freezer −1.8 °C/h while running and +0.34 °C/h while off, settling near
+    −11.7 °C, so `FREEZER TOO WARM` was on 89% of the time.
+  - Post-incident recovery: zero compressor runs from 10-13 18:09 to 10-16
+    09:48 while the over-cooled chamber drifted back up to the 5.5 °C cut-in.
+    The freezer peaked at −3.2 °C. The floor was active only for the first
+    ~10 h; the rest was normal dead-band "maintain off".
+
+  A rough two-point heat model (wall leak k≈0.0147/h, evaporator side
+  k≈0.075/h, Te≈−40 °C) says −15 °C needs ~22% duty with the fridge at ~3 °C,
+  and −18 °C needs ~27% with the fridge at ~1–2 °C. In an 8 °C room, plain
+  control could let the freezer drift toward ~−5 °C. These are estimates for
+  orientation only.
+
+  Implementation (`control_tick`):
+  - `floor_c` is now computed before demand (from the user setpoint).
+  - Assist state has ±`FREEZER_ASSIST_HYST_C` hysteresis around
+    `freezer_target`. It goes inactive if the freezer probe is
+    invalid/disabled, in blind mode, or when the system is off.
+  - `sp_ctl` replaces `setpoint` *only* in the two demand comparisons and the
+    Compressor ON/OFF log lines, which print the effective setpoint and an
+    `ASSIST` tag.
+  - The offset is clamped to
+    `(sp − HYST_BELOW) − (floor + FREEZER_ASSIST_FLOOR_GAP_C)`: 1.0 at sp ≥ 1.5
+    and smaller below that, where the floor's −1 °C clamp bites.
+  - Fan Inhibit is checked after the door cut-off and skipped during defrost.
+  - Defrost credit lives in the compressor-off branch of the runtime counters
+    and is skipped while `defrost_active`.
+
+  Entities: switches `freezer_assist` and `fan_inhibit`, numbers
+  `freezer_target` and `assist_offset`, binary sensor `freezer_assist_active`.
+  NVS keys: `frz_assist`, `fan_inhibit`, `frz_target`, `asst_offset`.
+
+## Hardware-verified (2026-10-23, device at 192.168.1.75)
+
+- Cold-room build (isolated PIO 6.1.19, pioarduino 55.03.39 / IDF 5.5.4,
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` still present) OTA'd to **both**
+  slots back to back. Each passed its health check at ~38 s; the second went in
+  inside the 3-min post-boot compressor lockout, so the run was cut only once.
+  New entities present with the expected defaults (assist off, target −18,
+  offset 1.0).
+- **Fan Inhibit switched ON at 19:37Z** to start the 2-day test. Baseline
+  (previous 9 days, ~12 °C room): 48-min runs, ~16.5% duty, freezer ~−11.7 °C.
+  It works if runs get longer than ~48 min, duty rises above ~20%, and the
+  freezer trends below −13 °C while the chamber holds ~4 °C. Check
+  upper/lower spread, and compare against ambient (the room is cooling at the
+  same time).
+
 ## Hardware-verified (2026-10-13, device at 192.168.1.75)
 
 - Test image (clock offset 2³¹ − 5 min) OTA'd: boot log `now 2147183664`,
