@@ -109,8 +109,21 @@ would eat a click target mid-interaction.
 
 ## Environment gotchas (important for tooling)
 
-- Windows 11, PowerShell default shell. There are **two PlatformIO cores**
-  installed (6.1.15 and 6.1.19) — harmless warning, ignore it. `pio` works.
+- **Build with the project's own PlatformIO, not the global `pio` (2026-10-23).**
+  ESPHome 2026.10.0 lives in the same user Python and pins
+  `platformio==6.2.0`. Its SCons 4.11 breaks the pinned pioarduino 55.03.39
+  platform at link time: `ModuleNotFoundError: No module named
+  'SCons.Tool.FortranCommon'`, after everything has compiled. FridgeCTL
+  therefore has an isolated PlatformIO 6.1.19 venv and core dir (machine-
+  specific, so kept out of platformio.ini):
+  ```
+  $env:PLATFORMIO_CORE_DIR = "C:\pb\pio-core"; $env:PLATFORMIO_BUILD_DIR = "C:\pb\fc2"; C:\pb\pio619\Scripts\pio.exe run
+  ```
+  The image lands in `C:\pb\fc2\fridgectl\firmware.bin`. Recreate the venv
+  with `python -m venv C:\pb\pio619` then
+  `C:\pb\pio619\Scripts\python -m pip install platformio==6.1.19`.
+- Windows 11, PowerShell default shell. Besides the venv above there are
+  global PlatformIO cores (the user-site one is now 6.2.0 via ESPHome).
 - **Run `pio` from PowerShell, never from the Bash/MSys tool.** ESP-IDF's
   `idf_tools.py` hard-refuses there ("MSys/Mingw is not supported") and the
   build dies before compiling anything.
