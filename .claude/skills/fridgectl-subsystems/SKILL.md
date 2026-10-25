@@ -271,6 +271,38 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
   freezer trends below −13 °C while the chamber holds ~4 °C. Check
   upper/lower spread, and compare against ambient (the room is cooling at the
   same time).
+- **Fan test result (`history (2).csv`, 47.4 h inhibited vs 21.6 h before,
+  2026-10-25): break-even.** Fan Inhibit lengthens the cycles but doesn't add
+  runtime. Runtime is set by the chamber's heat balance, and the fan only
+  redistributes it.
+
+  | | Fan normal | Fan inhibited |
+  |---|---|---|
+  | Run length | 48 min | 70 min |
+  | Off period | 255 min | 362 min |
+  | Runs per day | ~5 | 3 |
+  | Duty | 16.5% (prior-week baseline) | 14.8% (~6% of the drop is the 0.4 °C cooler room) |
+  | Freezer drop per run | −1.35 °C | −2.7 °C |
+  | Freezer cooling per run-minute | −1.64 °C/h | −2.32 °C/h |
+  | Freezer mean | −11.56 °C | −11.72 °C |
+  | Freezer swing | 2.8 °C | 4.2 °C |
+
+  Faster freezer cooling per run-minute means less fridge-plate load lets the
+  evaporator run colder. But the off periods stretched just as much: the cold
+  stored in the wall bleeds out slowly, and the near-wall probes see it.
+  Chamber mean was unchanged (4.47 → 4.44), and the upper/lower spread
+  *shrank* (0.87 → 0.61), the opposite of the stratification worry. Kept ON
+  for fewer starts and no downside beyond the wider freezer swing.
+- **Natural defrost credit verified:** `Defrost counter reset after 60 min
+  off (natural defrost)` appears once per cycle (4× in the log tail), and
+  there was no forced defrost in 47 h.
+- Freezer peaks drifted −10.1 → −9.8 °C and run-end minima −12.9 → −12.6 °C
+  over the 2 days, tracking the room cooling from 11.9 to 10.8 °C.
+- **Freezer Assist switched ON at 2026-10-25 19:14Z** (Fan Inhibit stays ON;
+  the 47 h above are the baseline). It engaged immediately:
+  `Freezer assist ON (freezer -9.7 C)` then `Compressor ON (t=5.4 sp=3.0
+  ASSIST)`, starting at the new 4.5 °C cut-in. Rough expectation at a ~11 °C
+  room: fridge mean ~3.4 °C, duty ~17%, freezer ~−13 °C.
 
 ## Hardware-verified (2026-10-13, device at 192.168.1.75)
 
