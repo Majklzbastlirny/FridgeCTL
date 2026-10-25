@@ -257,6 +257,45 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
   `freezer_target` and `assist_offset`, binary sensor `freezer_assist_active`.
   NVS keys: `frz_assist`, `fan_inhibit`, `frz_target`, `asst_offset`.
 
+- **Auto modes (2026-10-25).** The user asked for seasonal set-and-forget.
+  One environmental flag, `g.cold_room`, gates both features via AND-modifier
+  switches `freezer_assist_auto` / `fan_inhibit_auto` (default off, so
+  flashing changes nothing).
+  - No HA `select`: it would need new discovery, routing and web rendering,
+    and would retire the `fan_inhibit` entity, leaving stale retained config
+    and breaking HA history.
+  - Default threshold 18 °C, derived from the 2026-10 fit (fan-off
+    k_on≈0.082/h, k_leak≈0.0147/h, Te≈−40 °C, duty ∝ ambient − chamber).
+    Unaided, the freezer first holds −18 °C at ~18.7 °C ambient; with assist
+    offset 1 at ~17.1 °C.
+  - `update_cold_room()` sits before the system-off early return, so the
+    sensor stays live while off. Invalid ambient → false → stock behaviour.
+  - Assist Auto can only *remove* assist. Fan Auto deliberately keys off
+    `cold_room` rather than assist-active: in a cold room, fan-off still buys
+    fewer starts and an even chamber while the freezer is satisfied.
+  - Quick hardware check of the warm-room path: set Cold Room Threshold below
+    ambient − 1 (e.g. 8 at an 11 °C room). Cold Room goes OFF, the log shows
+    `Freezer assist OFF`, and the fan runs on the next compressor run.
+    Restore it and everything re-engages.
+
+## Hardware-verified (2026-10-25, device at 192.168.1.75)
+
+- Auto-modes build OTA'd to **both** slots; health check PASSED at ~38 s on
+  each. At boot: `Cold room ON (ambient 11.0 C, threshold 18.0 C)` then
+  `Freezer assist ON`.
+- Both Auto switches ON (behaviour identical at an 11 °C room). Round trip
+  during a natural assisted run (`Compressor ON (t=5.4 sp=3.0 ASSIST)`), with
+  every transition taking effect within one tick:
+
+  | Step | Cold Room | Assist | Fan |
+  |---|---|---|---|
+  | Cold room | ON | ON | off (inhibited) |
+  | Threshold → 10 (UI min; 8 was clamped) | OFF | OFF | ON |
+  | Threshold → 18 | ON | ON | off |
+
+  Left at threshold 18 with both Autos ON, Fan Inhibit ON and Freezer
+  Assist ON.
+
 ## Hardware-verified (2026-10-23, device at 192.168.1.75)
 
 - Cold-room build (isolated PIO 6.1.19, pioarduino 55.03.39 / IDF 5.5.4,

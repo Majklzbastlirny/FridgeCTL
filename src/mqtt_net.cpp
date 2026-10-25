@@ -71,6 +71,7 @@ BGET(defrost,       g.defrost_active)
 BGET(door,          g.door_phys)
 BGET(chamber_floor, g.chamber_floor_trip)
 BGET(frz_assist,    g.freezer_assist_active)
+BGET(cold_room,     g.cold_room)
 static bool bg_blind(void){ return ctl_blind_mode(); }
 static bool bg_comp_temp_fault(void){ return ctl_comp_temp_fault(); }
 static bool bg_freezer_sensor_fault(void){ return ctl_freezer_sensor_fault(); }
@@ -96,6 +97,10 @@ static bool sw_get_assist(void){ StateGuard l; return g.freezer_assist_enable; }
 static void sw_set_assist(bool v){ StateGuard l; g.freezer_assist_enable = v; nvs_store_mark_dirty(); }
 static bool sw_get_faninh(void){ StateGuard l; return g.fan_inhibit; }
 static void sw_set_faninh(bool v){ StateGuard l; g.fan_inhibit = v; nvs_store_mark_dirty(); }
+static bool sw_get_asstauto(void){ StateGuard l; return g.freezer_assist_auto; }
+static void sw_set_asstauto(bool v){ StateGuard l; g.freezer_assist_auto = v; nvs_store_mark_dirty(); }
+static bool sw_get_fanauto(void){ StateGuard l; return g.fan_inhibit_auto; }
+static void sw_set_fanauto(bool v){ StateGuard l; g.fan_inhibit_auto = v; nvs_store_mark_dirty(); }
 static bool sw_get_k1(void){ StateGuard l; return g.k1_on; }
 static void sw_set_k1(bool v){ StateGuard l; g.k1_on = v; relay_k1(v); }
 
@@ -114,6 +119,7 @@ NSET(frz_cold,   freezer_cold_thr,     -40.0f, -15.0f)
 NSET(frz_crit,   freezer_crit_thr,     -10.0f,  10.0f)
 NSET(frz_target, freezer_target,       -24.0f, -10.0f)
 NSET(asst_off,   assist_offset,          0.0f,   1.0f)
+NSET(cold_thr,   cold_room_thr,         10.0f,  25.0f)
 NSET(off_upper,  off_upper,             -5.0f,   5.0f)
 NSET(off_lower,  off_lower,             -5.0f,   5.0f)
 NSET(off_comp,   off_compressor,        -5.0f,   5.0f)
@@ -202,6 +208,7 @@ static const BinEnt BINS[] = {
   {"high_duty","High Duty Cycle","problem","mdi:gauge-full",bg_high_duty},
   {"chamber_too_cold","Chamber Too Cold","problem","mdi:snowflake-thermometer",bg_chamber_floor},
   {"freezer_assist_active","Freezer Assist Active",nullptr,"mdi:fridge-bottom",bg_frz_assist},
+  {"cold_room","Cold Room",nullptr,"mdi:snowflake",bg_cold_room},
   {"door","Door","door",nullptr,bg_door},
 };
 
@@ -213,6 +220,8 @@ static const SwitchEnt SWITCHES[] = {
   {"freezer_sensor","Freezer Sensor","mdi:thermometer-off",sw_get_frzsens,sw_set_frzsens},
   {"freezer_assist","Freezer Assist","mdi:fridge-bottom",sw_get_assist,sw_set_assist},
   {"fan_inhibit","Fan Inhibit","mdi:fan-off",sw_get_faninh,sw_set_faninh},
+  {"freezer_assist_auto","Freezer Assist Auto","mdi:thermometer-auto",sw_get_asstauto,sw_set_asstauto},
+  {"fan_inhibit_auto","Fan Inhibit Auto","mdi:fan-auto",sw_get_fanauto,sw_set_fanauto},
   {"k1_spare","K1 Spare","mdi:toggle-switch",sw_get_k1,sw_set_k1},
 };
 
@@ -225,6 +234,7 @@ static const NumberEnt NUMBERS[] = {
   {"vacation_temp","Vacation Temperature","°C","mdi:beach",5.0f,12.0f,0.5f,true,ng_vac_temp,ns_vac_temp},
   {"freezer_target","Freezer Target","°C","mdi:fridge-bottom",-24.0f,-10.0f,0.5f,true,ng_frz_target,ns_frz_target},
   {"assist_offset","Freezer Assist Offset","°C","mdi:thermometer-minus",0.0f,1.0f,0.5f,true,ng_asst_off,ns_asst_off},
+  {"cold_room_thr","Cold Room Threshold","°C","mdi:home-thermometer",10.0f,25.0f,0.5f,true,ng_cold_thr,ns_cold_thr},
   {"freezer_warm_thr","Freezer Warm Threshold","°C","mdi:thermometer-high",-20.0f,0.0f,0.5f,true,ng_frz_warm,ns_frz_warm},
   {"freezer_cold_thr","Freezer Cold Threshold","°C","mdi:thermometer-low",-40.0f,-15.0f,1.0f,true,ng_frz_cold,ns_frz_cold},
   {"freezer_crit_thr","Freezer Critical Threshold","°C","mdi:food-off",-10.0f,10.0f,1.0f,true,ng_frz_crit,ns_frz_crit},

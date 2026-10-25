@@ -78,6 +78,7 @@ void nvs_store_load(void) {
     get_f(h, "frz_crit",    &g.freezer_crit_thr);
     get_f(h, "frz_target",  &g.freezer_target);
     get_f(h, "asst_offset", &g.assist_offset);
+    get_f(h, "cold_thr",    &g.cold_room_thr);
     // Per-sensor calibration offsets
     get_f(h, "off_upper",   &g.off_upper);
     get_f(h, "off_lower",   &g.off_lower);
@@ -94,6 +95,8 @@ void nvs_store_load(void) {
     get_bool(h, "frz_sens_en", &g.freezer_sensor_enable);
     get_bool(h, "frz_assist",  &g.freezer_assist_enable);
     get_bool(h, "fan_inhibit", &g.fan_inhibit);
+    get_bool(h, "asst_auto",   &g.freezer_assist_auto);
+    get_bool(h, "fan_inh_auto",&g.fan_inhibit_auto);
     nvs_close(h);
     ESP_LOGI(TAG, "loaded config (starts=%lu runtime=%lu min)",
              (unsigned long)g.comp_starts, (unsigned long)g.comp_runtime_min);
@@ -127,6 +130,7 @@ void nvs_store_save(void) {
         set_f(h, "frz_crit",    g.freezer_crit_thr);
         set_f(h, "frz_target",  g.freezer_target);
         set_f(h, "asst_offset", g.assist_offset);
+        set_f(h, "cold_thr",    g.cold_room_thr);
         set_f(h, "off_upper",   g.off_upper);
         set_f(h, "off_lower",   g.off_lower);
         set_f(h, "off_comp",    g.off_compressor);
@@ -140,6 +144,8 @@ void nvs_store_save(void) {
         nvs_set_u8(h, "frz_sens_en", g.freezer_sensor_enable ? 1 : 0);
         nvs_set_u8(h, "frz_assist",  g.freezer_assist_enable ? 1 : 0);
         nvs_set_u8(h, "fan_inhibit", g.fan_inhibit ? 1 : 0);
+        nvs_set_u8(h, "asst_auto",   g.freezer_assist_auto ? 1 : 0);
+        nvs_set_u8(h, "fan_inh_auto",g.fan_inhibit_auto ? 1 : 0);
     }
     nvs_commit(h);
     nvs_close(h);

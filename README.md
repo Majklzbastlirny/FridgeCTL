@@ -53,6 +53,11 @@ keeps feeding the watchdog and keeps the compressor safe.
 - **Fan Inhibit** switch (off by default). It keeps the fridge fan off with
   the compressor and run-on, so runs last longer and the freezer gets more of
   them. The fan still runs during defrost.
+- **Auto modes.** A *Cold Room* flag (ambient below **Cold Room Threshold**,
+  default 18 °C, released at +1 °C) lets **Freezer Assist Auto** and **Fan
+  Inhibit Auto** limit those features to a cold room. That gives one
+  set-and-forget configuration for the whole year. An unreadable ambient
+  probe falls back to stock behaviour.
 - **Natural defrost credit.** A compressor-off period of ≥ 60 min resets the
   runtime-based forced-defrost counter, because the cold wall has already
   defrosted by itself. This stops a forced defrost interrupting a run that

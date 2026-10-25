@@ -115,6 +115,13 @@
 #define FREEZER_ASSIST_HYST_C      1.0f
 #define FREEZER_ASSIST_FLOOR_GAP_C 1.0f
 
+// Cold-room detection for the Auto modes of Freezer Assist and Fan Inhibit.
+// The room counts as cold below cold_room_thr (default 18 C: below ~18.7 C
+// the freezer can't hold -18 C unaided, per the 2026-10 data fit) and stops
+// counting above thr + HYST. An unreadable ambient probe means "not cold",
+// i.e. stock behaviour.
+#define COLD_ROOM_HYST_C           1.0f
+
 // Natural defrost credit (not in the ESPHome spec): a compressor-off period
 // this long lets the fridge's cold wall defrost passively, so the runtime-
 // based forced-defrost counter is reset. 60 min, not the 20 min forced

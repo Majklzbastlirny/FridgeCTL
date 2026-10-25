@@ -156,7 +156,8 @@ Open a browser to the device's address.
 - **Password protected** (username `admin` by default; password is the one set
   when the firmware was built).
 - Full control: every switch (System Enable, Turbo, Vacation, Door Override,
-  Freezer Sensor, Freezer Assist, Fan Inhibit, K1 spare), every setpoint and
+  Freezer Sensor, Freezer Assist, Fan Inhibit and their Auto switches,
+  K1 spare), every setpoint and
   configuration value, action
   buttons (Reset Overcurrent, Trigger Defrost, Restart), and **firmware upload**.
 
@@ -186,6 +187,7 @@ do on the web control page you can also do from Home Assistant.
 | Upper / Lower / Compressor / Ambient / Freezer Temp Offset | −5…+5 °C | Per-sensor calibration trim added to that probe's reading |
 | Freezer Target | −24…−10 °C | Freezer Assist engages while the freezer is warmer than this (default −18) |
 | Freezer Assist Offset | 0–1 °C | How far the fridge setpoint drops while Freezer Assist is active (default 1) |
+| Cold Room Threshold | 10–25 °C | Ambient below this counts as a cold room for the Auto modes (default 18) |
 
 ### Cold rooms: Freezer Assist and Fan Inhibit
 
@@ -207,6 +209,26 @@ that trade:
   every run early; without it, runs last longer and the freezer gets more
   cooling. Expect a bigger difference between the upper and lower fridge
   sensors.
+
+**Auto modes (seasonal switching).** Fan Inhibit is a winter setting: in a
+warm room or a full fridge the fan keeps the fridge even and cools warm
+groceries faster. Each feature has an **Auto** switch that limits it to a
+*cold room*, i.e. while the ambient sensor reads below **Cold Room
+Threshold** (default 18 °C; it switches back above 19 °C). The **Cold Room**
+indicator shows the current state.
+
+| Main switch | Auto switch | Result |
+|---|---|---|
+| Off | either | Feature off |
+| On | Off | Feature always on (Freezer Assist still only acts while the freezer is above its target) |
+| On | On | Feature only in a cold room |
+
+With both Autos on, you can leave the settings alone all year. Below 18 °C
+the fan stays off and Freezer Assist helps the freezer; above it the fridge
+behaves exactly as stock. Freezer Assist Auto only ever *removes* help (it
+stops the fridge running colder in summer when the freezer is briefly warm
+after loading). It never adds help the freezer wasn't already asking for. If
+the ambient sensor fails, both Autos fall back to stock behaviour.
 
 Try one at a time and give each a couple of days. The **Compressor Duty
 Cycle** and **Freezer Temp** history in Home Assistant show whether it helps.

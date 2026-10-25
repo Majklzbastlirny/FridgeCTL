@@ -37,6 +37,24 @@ static void expire_deadlines(uint32_t now) {
     if (!deadline_pending(g.setpoint_show_until, now))  g.setpoint_show_until = 0;
 }
 
+// Cold-room flag for the Auto modes (beyond the ESPHome spec). Environmental,
+// so it is tracked even while the system is off. Unreadable ambient -> not
+// cold, which falls back to stock behaviour (fan runs, no assist).
+static void update_cold_room(void) {
+    float t_amb = g.temp_ambient;
+    float thr = isnan(g.cold_room_thr) ? 18.0f : g.cold_room_thr;
+    bool amb_ok = !isnan(t_amb) && t_amb > -40.0f && t_amb < 60.0f;
+    bool cold = g.cold_room;
+    if (!amb_ok)                                     cold = false;
+    else if (!cold && t_amb < thr)                   cold = true;
+    else if (cold && t_amb > thr + COLD_ROOM_HYST_C) cold = false;
+    if (cold != g.cold_room) {
+        g.cold_room = cold;
+        ESP_LOGI(TAG, "Cold room %s (ambient %.1f C, threshold %.1f C)",
+                 cold ? "ON" : "OFF", t_amb, thr);
+    }
+}
+
 // ================================================================
 //  Main control tick — faithful port of the ESPHome 5 s interval.
 //  Runs entirely under the state lock; performs no blocking I/O.
@@ -54,6 +72,8 @@ static void control_tick(void) {
     // the cache-off flash write — the exact pileup that crashes the chip. We
     // still bump the heartbeat so the rollback health check stays satisfied.
     if (g.ota_in_progress) { g.control_beats++; return; }
+
+    update_cold_room();
 
     // ---- System disabled: everything off ----
     if (!g.system_enable) {
@@ -285,8 +305,12 @@ static void control_tick(void) {
     // above the floor. A deeper trade means lowering Target Temperature.
     bool frz_ok = g.freezer_sensor_enable && !isnan(t_frz) &&
                   t_frz > TEMP_FREEZER_MIN_C && t_frz < TEMP_FREEZER_MAX_C;
+    // Auto mode is an extra AND: assist only in a cold room. It never adds
+    // assist the freezer trigger wasn't already asking for.
+    bool assist_allowed = g.freezer_assist_enable &&
+                          (!g.freezer_assist_auto || g.cold_room);
     bool assist = g.freezer_assist_active;
-    if (!g.freezer_assist_enable || !frz_ok || blind_mode) {
+    if (!assist_allowed || !frz_ok || blind_mode) {
         assist = false;
     } else {
         float tgt = isnan(g.freezer_target) ? -18.0f : g.freezer_target;
@@ -418,7 +442,10 @@ static void control_tick(void) {
     // rear wall, so the fridge satisfies itself sooner and every run ends
     // early, leaving the freezer short. Inhibited, runs last longer. Defrost
     // still uses the fan (compressor is off then, so it costs the freezer nothing).
-    if (g.fan_inhibit && !g.defrost_active) want_fan = false;
+    // Auto mode: only in a cold room. In a warm room or a full fridge the fan
+    // keeps the chamber even and recovers it faster after loading.
+    bool fan_inhibited = g.fan_inhibit && (!g.fan_inhibit_auto || g.cold_room);
+    if (fan_inhibited && !g.defrost_active) want_fan = false;
 
     if (want_fan && !g.fan_on) { relay_fan(true);  g.fan_on = true;  diag_event(DIAG_FAN_ON); }
     if (!want_fan && g.fan_on) { relay_fan(false); g.fan_on = false; diag_event(DIAG_FAN_OFF); }

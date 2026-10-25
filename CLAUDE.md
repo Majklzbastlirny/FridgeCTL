@@ -274,6 +274,13 @@ freezer settled at ~−11.7 °C.
   still uses it.
 - **Natural defrost credit**: compressor off ≥ `DEFROST_NATURAL_OFF_MS`
   (60 min) zeroes `defrost_comp_min`.
+- **Auto modes (2026-10-25)**: `update_cold_room()` runs every tick before the
+  system-off return. `g.cold_room` turns on when ambient < `cold_room_thr`
+  (default 18) and off above thr + `COLD_ROOM_HYST_C`; an invalid ambient
+  means false. `freezer_assist_auto` / `fan_inhibit_auto` are AND-modifiers on
+  their master switches (master off = feature off). Assist still needs its
+  freezer trigger, and Fan Auto keys off `cold_room` directly, not off
+  assist-active.
 
 The assist and fan switches default OFF. Chamber probes are in glycol 5 cm
 from the cold rear wall, so with the fan off they may read colder than the
