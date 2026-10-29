@@ -58,6 +58,13 @@ keeps feeding the watchdog and keeps the compressor safe.
   Inhibit Auto** limit those features to a cold room. That gives one
   set-and-forget configuration for the whole year. An unreadable ambient
   probe falls back to stock behaviour.
+- **Duty-cycle average over ~3 h** (the YAML used ~1 h). With long winter
+  runs, a 1 h average spiked to ~70% after every run (false `HIGH DUTY
+  CYCLE`) and decayed to ~0 between runs while true duty was ~15%.
+- **DS18B20 85 °C power-on value rejected.** A probe that briefly loses power
+  returns +85.0 °C with a valid CRC. It is now treated as a failed read; before,
+  it would have passed the compressor probe's range and latched `COMPRESSOR
+  OVERTEMP`.
 - **Natural defrost credit.** A compressor-off period of ≥ 60 min resets the
   runtime-based forced-defrost counter, because the cold wall has already
   defrosted by itself. This stops a forced defrost interrupting a run that

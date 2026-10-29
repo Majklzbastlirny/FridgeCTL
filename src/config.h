@@ -145,7 +145,12 @@
 #define BUZZER_SILENCE_MS        600000    // 10 min
 #define SETPOINT_SHOW_MS         3000      // LED setpoint feedback window
 
-#define DUTY_EMA_ALPHA           (1.0f / 720.0f)   // ~1 h time constant @ 5 s
+// ~3 h time constant @ 5 s (the ESPHome spec used ~1 h). With the cold-room
+// settings a single run lasts ~72 min, which pushed a 1 h EMA to ~0.70 and
+// tripped HIGH DUTY CYCLE after every run while true duty was ~15%. At 3 h a
+// 72-min run peaks near 0.44, and a compressor stuck on still crosses the
+// ~0.65 threshold in ~2.6 h.
+#define DUTY_EMA_ALPHA           (1.0f / 2160.0f)
 #define TEMP_HIST_TICKS          120       // 120 * 5 s = 10 min rate window
 
 // Sensor sanity bounds (DS18B20: 85C = power-on reset, out-of-range = dead)

@@ -278,6 +278,72 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
     `Freezer assist OFF`, and the fan runs on the next compressor run.
     Restore it and everything re-engages.
 
+- **Freezer Assist result (`history (3).csv`, 90.9 h, Assist + Fan Inhibit,
+  both Autos on, Cold Room ON throughout).** Use time-weighted means: HA logs
+  on change, so plain sample means are biased toward fast-falling stretches.
+
+  | | Room | Duty | Run/off (min) | Fridge mean | Freezer mean |
+  |---|---|---|---|---|---|
+  | Fan inhibited | 11.43 °C | 14.8% | 70/362 | 4.44 °C | −11.72 °C |
+  | Assist (steady days 10-27/28) | 10.50 °C | ~15.0% | 72/367 | 3.51 °C | −12.56 °C |
+
+  The whole-period duty is 17.4%, inflated by day 1's pull-down to the new
+  band. Chamber-to-ambient ΔT was 6.99 K in *both* periods: the room fell
+  0.93 °C and Assist lowered the fridge 0.93 °C, so Assist *held* runtime
+  against a cooling room. Counterfactual from the same fit: without Assist at
+  10.5 °C, duty ≈12.8% and freezer ≈−10.4, so Assist is worth ~2 °C like for
+  like. The fit predicted −12.4; observed −12.56.
+  Outlook at an 8 °C room with sp 4 + Assist: duty ≈9.7%, freezer mean ≈−9.
+  The only SW lever left is a lower Target, and the upper (back-wall) probe
+  already touched 1.4 °C after the first long assisted run.
+- **Freezer swing grew with Assist; most likely real, not a probe fault.**
+  Both freezer rates doubled together (cooling while ON −2.32 → −4.92 °C/h,
+  warming while OFF 0.46 → 0.96 °C/h) with identical run/off lengths. The
+  user did not open the freezer, and the growth was progressive over the
+  first 3–4 assisted cycles (drop −2.6, −4.8, −4.8, −5.8, then ~−6 per run),
+  not a step. A 15-min trace shows the freezer air keeps falling ~30 min after
+  the compressor stops, so the per-run "end" value understates the dip:
+
+  | Cycle | Run start | Compressor stops | Lowest point |
+  |---|---|---|---|
+  | Fan-only, 10-25 | −9.9 °C | −12.9 °C | **−13.8 °C** |
+  | Assist, 10-28 | −9.0 °C | −15.4 °C | **−17.0 °C** |
+
+  Interpretation: a colder fridge loads the fridge plate less, so the
+  evaporating temperature drops and the freezer *air* is chilled much
+  harder each run; afterwards the warmer food mass pulls the air back up
+  (hence the faster "warming"). The food likely sits near the −12.6 °C mean;
+  the −9 peaks and −17 dips are air at the probe. A cheap confirmation is a
+  thermometer inside a food pack. If smaller swings are wanted, Fan Inhibit
+  off (shorter, more frequent runs) is the next experiment.
+- **HIGH DUTY CYCLE false positives:** it fires 10–15 min after each long
+  run. The duty EMA has τ = 1 h, so a 72-min run from ~15% reaches ~0.70
+  against a 0.655 threshold at 10.5 °C ambient. Proposed fix: τ = 3 h
+  (alpha 1/2160). That gives a ~0.44 peak after a 72-min run, while a stuck-on
+  compressor still trips in ~2.6 h.
+- **DS18B20 85 °C power-on value seen:** freezer read 85.9 (85.0 + 0.9
+  offset) at 19:25:26 and 19:25:49 on 10-25, during the OTA's relay
+  transitions; the probe lost power and returned its POR scratchpad with a
+  valid CRC. The chamber/freezer ranges reject it, but the compressor range
+  (≤120 °C) would accept it → false `COMPRESSOR OVERTEMP` latch. Proposed fix:
+  `parse_scratchpad` returns NAN for raw `0x0550`, which the retry and
+  MISS_LIMIT debounce then absorb.
+- `FREEZER TOO WARM` latches every cycle because peaks sit above −12 for
+  more than 30 min. Suggested a −8 winter threshold so it means something.
+
+## Hardware-verified (2026-10-29, device at 192.168.1.75)
+
+- Duty-EMA τ 3 h + 85 °C POR rejection build OTA'd to **both** slots; health
+  check PASSED (~38 s) on each. Assist, Fan Inhibit, both Autos and threshold
+  18 all persisted across the reboots, and Cold Room / Freezer Assist
+  re-engaged at boot.
+- The duty sensor read 0% right after the flash. That was the *old* τ = 1 h
+  EMA having decayed to ~0 during a 5.5 h off period, which illustrates why
+  it was useless. With τ = 3 h it converges to the true ~15% over ~half a day.
+- The POR fix can't be triggered on demand. Evidence will be the absence of an
+  85 °C spike in HA around 14:43–14:45Z during these flashes (the previous
+  OTA produced two).
+
 ## Hardware-verified (2026-10-25, device at 192.168.1.75)
 
 - Auto-modes build OTA'd to **both** slots; health check PASSED at ~38 s on

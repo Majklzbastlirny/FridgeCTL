@@ -171,11 +171,14 @@ bool ds18b20_convert_all(gpio_num_t pin) {
 static float parse_scratchpad(const uint8_t *sp) {
     if (ow_crc8(sp, 8) != sp[8]) return NAN;     // CRC mismatch
     int16_t raw = (int16_t)((sp[1] << 8) | sp[0]);
-    float t = raw / 16.0f;
-    // 85.0 with a fresh power-on (and no valid conversion) is the DS18B20
-    // reset value; the control logic already treats >50C chamber as a
-    // fault, so we pass it through unchanged.
-    return t;
+    // 0x0550 = +85.0 C is the DS18B20 power-on scratchpad: the probe lost
+    // power and hasn't converted since. Seen 2026-10-25 on the freezer probe
+    // during an OTA's relay transitions. Its CRC is valid, so reject it here:
+    // the chamber/freezer ranges would catch it, but the compressor range
+    // (<=120 C) would not, and it would latch COMPRESSOR OVERTEMP. The retry
+    // and MISS_LIMIT debounce absorb the miss; the next conversion is good.
+    if (raw == 0x0550) return NAN;
+    return raw / 16.0f;
 }
 
 // Single read attempt (no retry). NAN on no-presence or CRC mismatch.
