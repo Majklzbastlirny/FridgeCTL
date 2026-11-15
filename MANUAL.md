@@ -135,12 +135,31 @@ firmware updates.
 
 ### Finding the device
 
-- On your network the controller currently appears at **`192.168.1.75`**
-  (assigned by your router; it may change — check your router's device list, or
-  the **IP Address** entity in Home Assistant).
-- If it can't join your Wi-Fi, it always broadcasts its own fallback hotspot
-  **"Fridgectl Fallback Hotspot"**. Connect to that and browse to
-  **`http://192.168.4.1/`** to reach it for recovery.
+- On your network the controller currently appears at **`192.168.20.187`**
+  (IoT network; assigned by your router. Check your router's device list or
+  the **IP Address** entity in Home Assistant if it ever moves).
+- It always broadcasts its own fallback hotspot
+  **"Fridgectl Fallback Hotspot"**, whether or not it is on your Wi-Fi.
+  Connect to that and browse to **`http://192.168.4.1/`** to reach it for
+  recovery.
+
+### Changing the Wi-Fi or MQTT broker
+
+On the control page, the **Network** section holds the Wi-Fi name and
+password and the MQTT broker address, username and password. Change what you
+need and press **Save & reboot**; the device restarts and joins the new
+network, so it may come back at a different address.
+
+- Passwords are never displayed. Leave a password field **empty to keep** the
+  current one.
+- Saved settings **replace** the ones built into the firmware (`secrets.h`).
+  The line under the fields says which are in use. **Use firmware defaults**
+  erases the saved ones and goes back to `secrets.h`.
+- If you mistype the Wi-Fi details, the device can't join, but the fridge
+  keeps working on its own. Connect your phone to **"Fridgectl Fallback
+  Hotspot"**, open **`http://192.168.4.1/control`** and correct them.
+- Moving to a new MQTT broker means Home Assistant must use that broker too.
+  Entities left on the old broker show as unavailable until you remove them.
 
 ### Web interface (two pages)
 

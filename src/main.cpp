@@ -17,6 +17,7 @@
 #include "ota.h"
 #include "diag.h"
 #include "logbuf.h"
+#include "net_cfg.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,6 +47,7 @@ extern "C" void app_main(void) {
     state_init_mutex();
     nvs_store_init();      // nvs_flash_init + load persisted config into g
     diag_init();           // reset reason + pre-reset breadcrumb snapshot (needs NVS)
+    net_cfg_load();        // WiFi/MQTT settings: web-UI saved, else secrets.h (needs NVS)
     gpio_io_init();        // relays/LEDs off, light PWM, inputs
     sensors_init();        // OneWire buses + ADC + internal temp sensor
 

@@ -1,6 +1,7 @@
 #include "mqtt_net.h"
 #include "config.h"
 #include "secrets.h"
+#include "net_cfg.h"
 #include "app_state.h"
 #include "control.h"
 #include "gpio_io.h"
@@ -503,14 +504,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
 }
 
 void mqtt_net_start(void) {
+    // Web-UI saved settings, else secrets.h (see net_cfg). net_cfg() is
+    // static storage, so the pointers stay valid for the client's lifetime.
+    const NetCfg &nc = net_cfg();
     esp_mqtt_client_config_t cfg = {};
-    cfg.broker.address.uri = MQTT_URI;
-#if defined(MQTT_USERNAME)
-    if (strlen(MQTT_USERNAME) > 0) {
-        cfg.credentials.username = MQTT_USERNAME;
-        cfg.credentials.authentication.password = MQTT_PASSWORD;
+    cfg.broker.address.uri = nc.mqtt_uri;
+    if (nc.mqtt_user[0]) {
+        cfg.credentials.username = nc.mqtt_user;
+        cfg.credentials.authentication.password = nc.mqtt_pass;
     }
-#endif
     cfg.session.last_will.topic   = AVAIL_TOPIC;
     cfg.session.last_will.msg     = "offline";
     cfg.session.last_will.qos     = 1;
@@ -520,7 +522,7 @@ void mqtt_net_start(void) {
     s_client = esp_mqtt_client_init(&cfg);
     esp_mqtt_client_register_event(s_client, MQTT_EVENT_ANY, mqtt_event_handler, nullptr);
     esp_mqtt_client_start(s_client);
-    ESP_LOGI(TAG, "client started -> %s", MQTT_URI);
+    ESP_LOGI(TAG, "client started -> %s", nc.mqtt_uri);
 }
 
 // ================================================================

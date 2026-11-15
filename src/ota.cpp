@@ -8,6 +8,7 @@
 #include "sensors.h"
 #include "nvs_store.h"
 #include "logbuf.h"
+#include "net_cfg.h"
 
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
@@ -30,6 +31,7 @@ static char s_expected_auth[128];
 //    /api/cmd     POST control commands    (Basic-Auth)
 //    /api/onewire GET  1-Wire bus inventory (Basic-Auth)
 //    /api/logs    GET  raw log tail        (Basic-Auth)
+//    /api/net     GET/POST WiFi + MQTT settings (Basic-Auth)
 //    /update      POST firmware image      (Basic-Auth)
 // ================================================================
 
@@ -97,6 +99,7 @@ static const char *PAGE_CTRL =
 "#log{background:#0b0d11;font:11px/1.45 ui-monospace,Consolas,monospace;"
 "padding:8px 12px;margin:0 16px 16px;height:340px;overflow:auto;white-space:pre-wrap;border-radius:8px}"
 "#log .w{color:#e84}#log .e{color:#f66}"
+"#net input{width:min(240px,55vw)}"
 "</style></head><body>"
 "<h1>FridgeCTL Controls <a class=btn href=/>&larr; View</a></h1>"
 "<div id=s>loading&hellip;</div>"
@@ -111,6 +114,19 @@ static const char *PAGE_CTRL =
 "<label style='margin-left:10px;text-transform:none'><input type=checkbox id=lf checked> follow</label>"
 "<span id=lstat></span></div>"
 "<pre id=log></pre>"
+// ---- Network settings. Own container, loaded once (not by load()'s 5 s
+// re-render) so typing into the fields is never overwritten.
+"<div class=sec>Network</div>"
+"<div id=net>"
+"<div class=row><span>WiFi SSID</span><input id=ns maxlength=32 autocomplete=off></div>"
+"<div class=row><span>WiFi password</span><input id=np type=password maxlength=64 autocomplete=new-password></div>"
+"<div class=row><span>MQTT broker URI</span><input id=nu maxlength=127 placeholder='mqtt://host:1883'></div>"
+"<div class=row><span>MQTT username</span><input id=nm maxlength=63 autocomplete=off></div>"
+"<div class=row><span>MQTT password</span><input id=nq type=password maxlength=63 autocomplete=new-password></div>"
+"<div class=note id=ni></div>"
+"<div class=row><button onclick=nsave()>Save &amp; reboot</button>"
+"<button class=act onclick=nreset()>Use firmware defaults</button></div>"
+"<div class=note id=nst></div></div>"
 "<div class=sec>Firmware</div>"
 "<div id=ota><input type=file id=f accept='.bin'> <button onclick=up()>Upload &amp; reboot</button>"
 "<div id=ostat></div></div>"
@@ -200,6 +216,24 @@ static const char *PAGE_CTRL =
 "catch(e){s.textContent=' copy failed';}"
 "document.body.removeChild(ta);}"
 "lload();setInterval(lload,2000);"
+// ---- Network settings. Passwords are never sent to the browser: the
+// placeholder only says whether one is set, and an empty field keeps it.
+"function $(i){return document.getElementById(i);}"
+"async function nload(){try{let d=await(await fetch('/api/net')).json();"
+"$('ns').value=d.ssid;$('nu').value=d.uri;$('nm').value=d.user;$('np').value='';$('nq').value='';"
+"$('np').placeholder=d.pass_set?'(unchanged)':'(none)';$('nq').placeholder=d.mpass_set?'(unchanged)':'(none)';"
+"$('ni').textContent='In use: '+(d.saved?'settings saved here':'firmware defaults (secrets.h)')"
+"+' \\u2014 IP '+d.ip+', WiFi '+(d.wifi?'connected':'down')+', MQTT '+(d.mqtt?'connected':'down')"
+"+'. Leave a password empty to keep it. If WiFi fails, connect to hotspot '+d.ap+' and open http://192.168.4.1/control';"
+"}catch(e){}}"
+"async function nsend(o,q){if(!confirm(q))return;$('nst').textContent='sending\\u2026';"
+"try{let r=await fetch('/api/net',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(o)});"
+"$('nst').textContent=await r.text();}catch(e){$('nst').textContent='device is rebooting\\u2026';}}"
+"function nsave(){let o={ssid:$('ns').value,pass:$('np').value,uri:$('nu').value,user:$('nm').value,mpass:$('nq').value};"
+"nsend(o,'Save and reboot? The device will join '+o.ssid+' and may get a new IP address. '"
+"+'If it cannot connect, use the fallback hotspot at http://192.168.4.1/control.');}"
+"function nreset(){nsend({reset:true},'Erase the saved network settings and reboot with the firmware defaults (secrets.h)?');}"
+"nload();"
 "</script></body></html>";
 
 // ---- Basic-Auth ------------------------------------------------
@@ -512,6 +546,189 @@ static esp_err_t update_post(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// ================================================================
+//  Network settings (/api/net) — WiFi + MQTT, see net_cfg.h.
+//  Saved settings win over secrets.h until "Use firmware defaults".
+//  The fallback hotspot is always on (APSTA), so a wrong SSID/password
+//  never strands the device: http://192.168.4.1/control fixes it.
+// ================================================================
+
+// Reboot without the fan's inductive turn-off transient coinciding with the
+// reset (same reason as OTA phase 3). Callers write NVS BEFORE this, so no
+// relay changes during that flash write.
+static void safe_restart(const char *why) {
+    ESP_LOGW(TAG, "%s - relays off, settling %d ms, then reboot", why, OTA_FAN_SETTLE_MS);
+    {
+        StateGuard l;
+        g.restart_pending = true;          // control loop stops touching relays
+        relay_comp(false);
+        if (g.comp_on) { g.comp_on = false; g.comp_stop_ms = millis(); }
+        relay_k2(false);  g.k2_on = false;
+        relay_fan(false); g.fan_on = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(OTA_FAN_SETTLE_MS));
+    esp_restart();
+}
+
+// Copy a JSON string value into `out`, undoing the escapes JSON.stringify
+// emits (\" \\ \/ \b \f \n \r \t \uXXXX). Returns false if the key is
+// missing, malformed or the value doesn't fit. It never truncates: a silently
+// shortened password would leave the device on wrong credentials.
+static bool json_str_field(const char *body, const char *key, char *out, size_t n) {
+    char pat[24];
+    snprintf(pat, sizeof(pat), "\"%s\":", key);
+    const char *p = strstr(body, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ') p++;
+    if (*p++ != '"') return false;
+    size_t i = 0;
+    while (*p && *p != '"') {
+        unsigned c = (unsigned char)*p++;
+        if (c == '\\') {
+            if (!*p) return false;
+            char e = *p++;
+            if      (e == '"' || e == '\\' || e == '/') c = (unsigned char)e;
+            else if (e == 'b') c = '\b';
+            else if (e == 'f') c = '\f';
+            else if (e == 'n') c = '\n';
+            else if (e == 'r') c = '\r';
+            else if (e == 't') c = '\t';
+            else if (e == 'u') {
+                unsigned v = 0;
+                for (int k = 0; k < 4; k++) {
+                    char h = *p++;
+                    v <<= 4;
+                    if      (h >= '0' && h <= '9') v |= (unsigned)(h - '0');
+                    else if (h >= 'a' && h <= 'f') v |= (unsigned)(h - 'a' + 10);
+                    else if (h >= 'A' && h <= 'F') v |= (unsigned)(h - 'A' + 10);
+                    else return false;
+                }
+                if (v >= 0x80) {             // UTF-8 encode (BMP)
+                    char u[3]; size_t ul;
+                    if (v < 0x800) { u[0] = (char)(0xC0 | (v >> 6)); u[1] = (char)(0x80 | (v & 0x3F)); ul = 2; }
+                    else { u[0] = (char)(0xE0 | (v >> 12)); u[1] = (char)(0x80 | ((v >> 6) & 0x3F));
+                           u[2] = (char)(0x80 | (v & 0x3F)); ul = 3; }
+                    if (i + ul >= n) return false;
+                    memcpy(out + i, u, ul); i += ul;
+                    continue;
+                }
+                c = v;
+            } else return false;
+        }
+        if (i + 1 >= n) return false;
+        out[i++] = (char)c;
+    }
+    if (*p != '"') return false;             // unterminated string
+    out[i] = 0;
+    return true;
+}
+
+// Bounded JSON writer for net_get (never overflows; escapes " \ and control chars).
+struct JOut {
+    char *b; size_t n, p = 0;
+    void raw(const char *s) { while (*s && p + 1 < n) b[p++] = *s++; b[p] = 0; }
+    void str(const char *s) {
+        raw("\"");
+        for (; *s; s++) {
+            unsigned char c = (unsigned char)*s;
+            char t[8];
+            if (c == '"' || c == '\\') { t[0] = '\\'; t[1] = (char)c; t[2] = 0; }
+            else if (c < 0x20)        snprintf(t, sizeof(t), "\\u%04x", c);
+            else                      { t[0] = (char)c; t[1] = 0; }
+            raw(t);
+        }
+        raw("\"");
+    }
+};
+
+static esp_err_t net_get(httpd_req_t *req) {
+    if (!check_auth(req)) return deny(req);
+    const NetCfg &c = net_cfg();
+    char ip[16]; bool wifi, mqtt;
+    { StateGuard l; strlcpy(ip, g.ip_addr, sizeof(ip)); wifi = g.wifi_connected; mqtt = g.mqtt_connected; }
+    char buf[1024];
+    JOut o{buf, sizeof(buf)};
+    o.raw("{\"ssid\":");  o.str(c.ssid);
+    o.raw(",\"uri\":");   o.str(c.mqtt_uri);
+    o.raw(",\"user\":");  o.str(c.mqtt_user);
+    o.raw(",\"ap\":");    o.str(AP_SSID);
+    o.raw(",\"ip\":");    o.str(ip);
+    o.raw(c.pass[0]      ? ",\"pass_set\":true"  : ",\"pass_set\":false");
+    o.raw(c.mqtt_pass[0] ? ",\"mpass_set\":true" : ",\"mpass_set\":false");
+    o.raw(c.from_nvs     ? ",\"saved\":true"     : ",\"saved\":false");
+    o.raw(wifi           ? ",\"wifi\":true"      : ",\"wifi\":false");
+    o.raw(mqtt           ? ",\"mqtt\":true}"     : ",\"mqtt\":false}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, o.p);
+}
+
+static bool is_hex(const char *s) {
+    for (; *s; s++)
+        if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F')))
+            return false;
+    return true;
+}
+
+static esp_err_t net_post(httpd_req_t *req) {
+    if (!check_auth(req)) return deny(req);
+    char body[768];
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)sizeof(body)) {
+        httpd_resp_sendstr(req, "error: request too large");
+        return ESP_OK;
+    }
+    int got = 0;
+    while (got < total) {
+        int r = httpd_req_recv(req, body + got, total - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) { httpd_resp_send_500(req); return ESP_FAIL; }
+        got += r;
+    }
+    body[got] = 0;
+
+    char flag[8];
+    if (json_field(body, "reset", flag, sizeof(flag)) && strcmp(flag, "true") == 0) {
+        if (!net_cfg_reset()) { httpd_resp_sendstr(req, "error: could not erase saved settings"); return ESP_OK; }
+        httpd_resp_sendstr(req, "Saved network settings erased. Rebooting in 3 s with the firmware defaults (secrets.h).");
+        safe_restart("network settings reset");
+        return ESP_OK;
+    }
+
+    // Start from what's in use, so an empty password field keeps the current one.
+    NetCfg c = net_cfg();
+    char pass[sizeof(c.pass)], mpass[sizeof(c.mqtt_pass)];
+    if (!json_str_field(body, "ssid",  c.ssid,      sizeof(c.ssid)) ||
+        !json_str_field(body, "pass",  pass,        sizeof(pass)) ||
+        !json_str_field(body, "uri",   c.mqtt_uri,  sizeof(c.mqtt_uri)) ||
+        !json_str_field(body, "user",  c.mqtt_user, sizeof(c.mqtt_user)) ||
+        !json_str_field(body, "mpass", mpass,       sizeof(mpass))) {
+        httpd_resp_sendstr(req, "error: a field is missing or too long (SSID max 32 bytes, "
+                                "WiFi password max 64, broker URI max 127, MQTT user/password max 63)");
+        return ESP_OK;
+    }
+    size_t pl = strlen(pass);
+    if (!c.ssid[0]) { httpd_resp_sendstr(req, "error: WiFi SSID is empty"); return ESP_OK; }
+    if (pl && !(pl >= 8 && pl <= 63) && !(pl == 64 && is_hex(pass))) {
+        httpd_resp_sendstr(req, "error: WiFi password must be 8-63 characters (or 64 hex digits)");
+        return ESP_OK;
+    }
+    if (strncmp(c.mqtt_uri, "mqtt://", 7) != 0 || !c.mqtt_uri[7]) {
+        httpd_resp_sendstr(req, "error: broker URI must look like mqtt://host:1883");
+        return ESP_OK;
+    }
+    if (pl) strlcpy(c.pass, pass, sizeof(c.pass));
+    if (mpass[0]) strlcpy(c.mqtt_pass, mpass, sizeof(c.mqtt_pass));
+    c.from_nvs = true;
+
+    if (!net_cfg_save(c)) { httpd_resp_sendstr(req, "error: could not save settings"); return ESP_OK; }
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Saved. Rebooting in 3 s; the device will join '%s'.", c.ssid);
+    httpd_resp_sendstr(req, msg);
+    safe_restart("network settings saved");
+    return ESP_OK;
+}
+
 void ota_start(void) {
     // Pre-compute the expected "Basic base64(user:pass)" header.
     char creds[96];
@@ -540,6 +757,8 @@ void ota_start(void) {
     httpd_uri_t u_upd   = { "/update",    HTTP_POST, update_post, nullptr };
     httpd_uri_t u_ow    = { "/api/onewire", HTTP_GET, onewire_get, nullptr };
     httpd_uri_t u_log   = { "/api/logs",  HTTP_GET,  logs_get,   nullptr };
+    httpd_uri_t u_netg  = { "/api/net",   HTTP_GET,  net_get,    nullptr };
+    httpd_uri_t u_netp  = { "/api/net",   HTTP_POST, net_post,   nullptr };
     httpd_register_uri_handler(server, &u_view);
     httpd_register_uri_handler(server, &u_state);
     httpd_register_uri_handler(server, &u_ctrl);
@@ -547,6 +766,8 @@ void ota_start(void) {
     httpd_register_uri_handler(server, &u_upd);
     httpd_register_uri_handler(server, &u_ow);
     httpd_register_uri_handler(server, &u_log);
+    httpd_register_uri_handler(server, &u_netg);
+    httpd_register_uri_handler(server, &u_netp);
 
     ESP_LOGI(TAG, "web server ready: / (view), /control (auth), /update (auth)");
 }

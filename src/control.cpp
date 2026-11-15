@@ -71,7 +71,8 @@ static void control_tick(void) {
     // toggled a relay here it could fire the fan's inductive transient during
     // the cache-off flash write — the exact pileup that crashes the chip. We
     // still bump the heartbeat so the rollback health check stays satisfied.
-    if (g.ota_in_progress) { g.control_beats++; return; }
+    // A staged reboot (network settings saved) freezes relays the same way.
+    if (g.ota_in_progress || g.restart_pending) { g.control_beats++; return; }
 
     update_cold_room();
 

@@ -331,6 +331,31 @@ Safety rules stayed in `CLAUDE.md` (control-path blocking ban, calibration lock)
 - `FREEZER TOO WARM` latches every cycle because peaks sit above −12 for
   more than 30 min. Suggested a −8 winter threshold so it means something.
 
+## Hardware-verified (2026-11-15, device moved to 192.168.20.187)
+
+- **Network move + web Network settings.** The device had been up 16.9 days
+  (1,456,695 s) with zero resets. The user put the IoT SSID and the broker
+  `mqtt://192.168.20.2:1883` into secrets.h.
+  - Flash 1 was uploaded at the old `192.168.0.215`. The device came back on
+  the IoT net with an IP at 2.4 s (`192.168.20.187`, a DHCP reservation), MQTT
+  connected, health check PASSED. Flash 2 went to `.187` and also passed.
+  `flash.sh` now takes separate upload and check IPs for exactly this case.
+  - The dev PC routes to 192.168.20.0/24 (checked gateway and broker before
+  flashing).
+- `/api/net` tests:
+  - GET returns `saved:false` (firmware defaults) and never returns
+    passwords, only `pass_set`/`mpass_set`. Without auth it returns 401. The
+    /control page shows the Network section.
+  - These are rejected with a message and no reboot: a 33-byte SSID (no
+    truncation), an `http://` URI, and a 5-char WiFi password.
+  - Save with the same SSID/URI/user and **empty passwords** → staged reboot →
+    boot log `network settings from web UI (NVS)`, WiFi + MQTT reconnected
+    (passwords carried over), `saved:true`.
+  - `{"reset":true}` → reboot → `firmware defaults (secrets.h)`,
+    `saved:false`. Left on firmware defaults.
+- All fridge settings persisted across the 4 reboots. Ambient is 8.5 °C now.
+  Fan Inhibit was found OFF (the user's saved choice from before; not touched).
+
 ## Hardware-verified (2026-10-29, device at 192.168.1.75)
 
 - Duty-EMA τ 3 h + 85 °C POR rejection build OTA'd to **both** slots; health

@@ -25,6 +25,8 @@ struct AppState {
     // ---- OTA status (not persisted) ----
     bool     ota_in_progress = false;   // upload underway -> "FIRMWARE UPDATE"
     bool     ota_failed      = false;   // last upload aborted -> latched alarm
+    bool     restart_pending = false;   // staged reboot underway: control loop
+                                        // must not touch relays (see ota.cpp)
 
     // ---- Live sensor readings (NAN = invalid/unavailable) ----
     float    temp_upper      = NAN;

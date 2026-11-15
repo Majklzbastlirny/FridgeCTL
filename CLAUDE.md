@@ -35,8 +35,10 @@ pio device monitor      # serial @ 115200
 - Build is **verified passing**: Flash 57.9% (~890 KB of 1.5 MB app slot),
   RAM 20.3% (66.6 KB — the jump from 13.2% is the 19 KB log ring in
   `logbuf.cpp`). Two OTA app slots (`partitions.csv`), 4 MB flash. Device runs at
-  `192.168.1.75` (DHCP; it was `.4` until 2026-10, and HA's IP Address sensor
-  always has the current one) and has been flashed + OTA-tested on real hardware.
+  `192.168.20.187` on the IoT network since 2026-11-15 (DHCP; earlier `.1.4`,
+  `.1.75`, `.0.215` on the generic LAN; HA's IP Address sensor always has the
+  current one). The dev PC (192.168.0.x) can route to 192.168.20.x. It has
+  been flashed and OTA-tested on real hardware.
 - **OTA after first USB flash**: use the web UI (below) — browse to
   `http://<device-ip>/control` (Basic auth) → Firmware section → upload
   `.pio/build/fridgectl/firmware.bin`. Or POST it:
@@ -101,8 +103,20 @@ The HTTP server exposes a 2-stage interface (entity data comes from the same
 - `GET /api/onewire`— 1-Wire bus inventory as JSON (Basic-Auth).
 - `GET /api/logs?since=N` — raw log tail, `text/plain`, **chunked** (Basic-Auth).
 - `POST /update`    — firmware image (Basic-Auth).
+- `GET/POST /api/net` — WiFi SSID/password + MQTT URI/user/password
+  (Basic-Auth, 2026-11-15, `net_cfg.{h,cpp}` + Network section on /control).
+  GET never returns passwords (only `pass_set`/`mpass_set`). POST saves to
+  NVS namespace `net`, then does a staged reboot (`safe_restart`: NVS first,
+  then `restart_pending` freezes the control loop, relays off, 3 s settle).
+  `{"reset":true}` erases the namespace. Empty password fields keep the
+  current value; over-long fields are rejected, never truncated.
+  **Precedence: saved settings win over secrets.h.** Once anything has been
+  saved, reflashing with a changed secrets.h does NOT change the network
+  until "Use firmware defaults". The page and the boot log say which is in
+  use. The fallback hotspot is always on (APSTA), so wrong credentials are
+  fixed at `http://192.168.4.1/control`.
 Same `OTA_USERNAME`/`OTA_PASSWORD` from secrets.h gate all protected routes.
-`max_uri_handlers` is 10 (7 in use). The control page's three generic sections
+`max_uri_handlers` is 10 (9 in use). The control page's three generic sections
 are re-rendered wholesale by `load()` every 5 s, so the 1-Wire and log panels
 live in **their own containers with their own polls** — otherwise the re-render
 would eat a click target mid-interaction.

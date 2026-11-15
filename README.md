@@ -108,6 +108,13 @@ src/
     with the *role*, not the probe — re-check them after reassigning.
   - **Logs** — live tail of the same output you'd see on the serial monitor,
     timestamps included, with a Copy button. Serial output is unaffected.
+  - **Network** — WiFi SSID/password and MQTT broker URI/user/password.
+    *Save & reboot* stores them on the device; they then **override**
+    `secrets.h` until *Use firmware defaults* erases them (so a reflash with
+    a changed `secrets.h` won't move the device while saved settings exist).
+    Passwords are never shown; leave a field empty to keep it. If the new
+    WiFi details are wrong, the always-on fallback hotspot still works:
+    connect to it and open `http://192.168.4.1/control` to fix them.
 
 ## First build & flash
 

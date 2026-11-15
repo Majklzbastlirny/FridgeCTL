@@ -2,6 +2,7 @@
 #include "app_state.h"
 #include "config.h"
 #include "secrets.h"
+#include "net_cfg.h"
 
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -52,11 +53,14 @@ void wifi_net_start(void) {
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT, IP_EVENT_STA_GOT_IP, &on_wifi_event, NULL, NULL));
 
-    // Station config
+    // Station config (web-UI saved settings, else secrets.h — see net_cfg)
+    const NetCfg &nc = net_cfg();
     wifi_config_t sta = {};
-    strlcpy((char *)sta.sta.ssid, WIFI_SSID, sizeof(sta.sta.ssid));
-    strlcpy((char *)sta.sta.password, WIFI_PASSWORD, sizeof(sta.sta.password));
-    sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;   // min_auth_mode: WPA2
+    strlcpy((char *)sta.sta.ssid, nc.ssid, sizeof(sta.sta.ssid));
+    strlcpy((char *)sta.sta.password, nc.pass, sizeof(sta.sta.password));
+    // min_auth_mode: WPA2, or open if no password is configured (a WPA2
+    // threshold would make an open network never connect).
+    sta.sta.threshold.authmode = nc.pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
 
     // Fallback AP config
     wifi_config_t ap = {};
@@ -78,9 +82,9 @@ void wifi_net_start(void) {
     StateGuard lock;
     snprintf(g.mac_addr, sizeof(g.mac_addr), "%02X:%02X:%02X:%02X:%02X:%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    strlcpy(g.ssid, WIFI_SSID, sizeof(g.ssid));
+    strlcpy(g.ssid, nc.ssid, sizeof(g.ssid));
 
-    ESP_LOGI(TAG, "WiFi started (STA:%s + AP:%s)", WIFI_SSID, AP_SSID);
+    ESP_LOGI(TAG, "WiFi started (STA:%s + AP:%s)", nc.ssid, AP_SSID);
 }
 
 void wifi_update_status(void) {
